@@ -2,3 +2,6 @@ streamlit>=1.40
 reportlab>=4.0
 Pillow>=10.0
 pypdf>=5.0
+streamlit
+reportlab
+requests
