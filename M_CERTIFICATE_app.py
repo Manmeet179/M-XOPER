@@ -1,4 +1,3 @@
-
 import io
 import os
 import re
@@ -7,7 +6,6 @@ import subprocess
 from datetime import datetime
 
 import streamlit as st
-import win32print
 
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
