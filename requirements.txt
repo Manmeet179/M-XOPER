@@ -1,3 +1,5 @@
-streamlit>=1.40
+streamlit
+reportlab
+pycupsstreamlit>=1.40
 reportlab>=4.0
 pywin32>=306
