@@ -123,7 +123,7 @@ with st.form("certificate_form"):
     st.subheader("Certificate details")
     a, b = st.columns(2)
     with a:
-        cert_date = st.date_input("Date", value=date.today(), format="DD-MMM-YYYY")
+        cert_date = st.date_input("Date", value=date.today(), format="DD/MM/YYYY")
         item_name = st.text_input("Item name (editable)", value="OPT LAN CABLE")
         model_no = st.text_input("Model No.", value="OPTL_LAN3")
     with b:
