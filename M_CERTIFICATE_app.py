@@ -568,8 +568,3 @@ if "mcert_pdf" in st.session_state:
 
             except Exception as e:
                 st.error(f"Printing failed: {e}")
-
-
-
-
-give currected full code
