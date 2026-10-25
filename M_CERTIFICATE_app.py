@@ -3,8 +3,8 @@ import io
 import re
 from datetime import date
 
-import streamlit as st
 import fitz
+import streamlit as st
 from PIL import Image
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
@@ -50,7 +50,7 @@ if "pdf_settings" not in st.session_state:
 
 
 def wrap_text(text, font, size, width):
-    """Wrap long text, including long values without spaces."""
+    """Wrap text and split long strings that have no spaces."""
     result = []
     line = ""
 
@@ -92,28 +92,31 @@ def safe_filename(name):
 def create_pdf(data, settings):
     buffer = io.BytesIO()
     pdf = canvas.Canvas(buffer, pagesize=A4)
-    page_w, page_h = A4
 
+    page_w, page_h = A4
     left = 48
     right = page_w - 48
     content_w = right - left
+
+    pdf.setFillColorRGB(0.08, 0.08, 0.08)
 
     # Date
     date_text = data["date"].strftime(
         FORMATS[settings["date_format"]]
     ).upper()
 
-    pdf.setFillColorRGB(0.08, 0.08, 0.08)
     pdf.setFont("Helvetica", 11)
     pdf.drawRightString(right, page_h - 145, "Date: " + date_text)
 
     # Certificate heading
     title = "TEST CERTIFICATE"
     title_y = page_h - 95
+
     pdf.setFont("Helvetica-Bold", 16)
     pdf.drawCentredString(page_w / 2, title_y, title)
 
     title_width = stringWidth(title, "Helvetica-Bold", 16)
+    pdf.setLineWidth(0.8)
     pdf.line(
         page_w / 2 - title_width / 2,
         title_y - 3,
@@ -124,10 +127,12 @@ def create_pdf(data, settings):
     # To whom it may concern
     concern = "TO WHOM IT MAY CONCERN"
     concern_y = page_h - 190
+
     pdf.setFont("Helvetica", 12)
     pdf.drawCentredString(page_w / 2, concern_y, concern)
 
     concern_width = stringWidth(concern, "Helvetica", 12)
+    pdf.setLineWidth(0.55)
     pdf.line(
         page_w / 2 - concern_width / 2,
         concern_y - 3,
@@ -150,9 +155,11 @@ def create_pdf(data, settings):
     for i, line in enumerate(intro_lines):
         pdf.drawString(left, intro_y - i * 15, line)
 
-    # Table
+    # FIXED: all optional keys are included in data.
     columns = [(settings["item"], data["item"])]
-    columns.extend((label, data[key]) for key, label in selected)
+
+    for key, label in selected:
+        columns.append((label, data.get(key, "")))
 
     count = len(columns)
 
@@ -171,7 +178,7 @@ def create_pdf(data, settings):
     max_value = 1
 
     for i, (heading, value) in enumerate(columns):
-        available = widths[i] - 12
+        available = max(10, widths[i] - 12)
 
         header_lines = wrap_text(
             heading, "Helvetica-Bold", 9, available
@@ -206,8 +213,8 @@ def create_pdf(data, settings):
         center_x = (xs[i] + xs[i + 1]) / 2
 
         y = table_top - (header_h - len(header_lines) * line_gap) / 2 - 9
-        pdf.setFont("Helvetica-Bold", 9)
 
+        pdf.setFont("Helvetica-Bold", 9)
         for line in header_lines:
             pdf.drawCentredString(center_x, y, line)
             y -= line_gap
@@ -235,10 +242,9 @@ def create_pdf(data, settings):
         y -= 15
 
     y -= 25
-
     sold_text = f'The above said item is sold to {data["sold_to"]}.'
-    pdf.setFont("Helvetica-Oblique", 10.5)
 
+    pdf.setFont("Helvetica-Oblique", 10.5)
     for line in wrap_text(
         sold_text, "Helvetica-Oblique", 10.5, content_w
     ):
@@ -250,7 +256,7 @@ def create_pdf(data, settings):
     pdf.drawString(left, y, f'For {settings["company"]},')
     pdf.drawString(left, y - 48, "Authorized")
 
-    # Fixed footer
+    # Fixed PDF footer
     pdf.setFont("Helvetica", 8)
     pdf.drawCentredString(
         page_w / 2, 20, "Made by MEET MEVADA"
@@ -283,33 +289,39 @@ with st.sidebar:
         "<p style='text-align:center'>Made by MEET MEVADA</p>",
         unsafe_allow_html=True
     )
+
     st.divider()
     st.header("PDF Page Settings")
 
-    settings = st.session_state.pdf_settings
+    cfg = st.session_state.pdf_settings
 
     with st.form("settings_form"):
         date_format = st.selectbox(
             "Date format",
             list(FORMATS.keys()),
-            index=list(FORMATS).index(settings["date_format"]),
+            index=list(FORMATS).index(cfg["date_format"]),
             format_func=lambda f: f"{f} ({EXAMPLES[f]})"
         )
 
         st.caption("Table headings")
-        item_heading = st.text_input("ITEM heading", settings["item"])
-        model_heading = st.text_input("Model No. heading", settings["model"])
-        serial_heading = st.text_input("Serial No. heading", settings["serial"])
-        make_heading = st.text_input("Make heading", settings["make"])
-        mac_heading = st.text_input("MAC ID heading", settings["mac"])
-        win_heading = st.text_input("WIN KEY heading", settings["win"])
-        company_name = st.text_input("Company name", settings["company"])
 
-        save_settings = st.form_submit_button(
-            "Save Settings", use_container_width=True
+        item_heading = st.text_input("ITEM heading", cfg["item"])
+        model_heading = st.text_input("Model No. heading", cfg["model"])
+        serial_heading = st.text_input("Serial No. heading", cfg["serial"])
+        make_heading = st.text_input("Make heading", cfg["make"])
+        mac_heading = st.text_input("MAC ID heading", cfg["mac"])
+        win_heading = st.text_input("WIN KEY heading", cfg["win"])
+
+        company_name = st.text_input(
+            "Company name in PDF", cfg["company"]
         )
 
-        if save_settings:
+        save = st.form_submit_button(
+            "💾 Save Settings",
+            use_container_width=True
+        )
+
+        if save:
             st.session_state.pdf_settings = {
                 "date_format": date_format,
                 "item": item_heading.strip() or DEFAULTS["item"],
@@ -320,9 +332,12 @@ with st.sidebar:
                 "win": win_heading.strip() or DEFAULTS["win"],
                 "company": company_name.strip() or DEFAULTS["company"],
             }
+
+            # Prevent an old preview from being mistaken for the new settings.
+            st.session_state.pop("certificate_pdf", None)
             st.rerun()
 
-    if st.button("Restore Default Settings", use_container_width=True):
+    if st.button("↩️ Restore Default Settings", use_container_width=True):
         st.session_state.pdf_settings = DEFAULTS.copy()
         st.session_state.pop("certificate_pdf", None)
         st.rerun()
@@ -364,22 +379,29 @@ with left_col:
 with right_col:
     model_no = st.text_input("Model No. Value") if show_model else ""
     serial_no = st.text_input("Serial No. Value") if show_serial else ""
-    make = st.text_input("Make Value") if show_make else ""
-    mac = st.text_input("MAC ID Value") if show_mac else ""
-    win = st.text_input("WIN KEY Value") if show_win else ""
+    make_value = st.text_input("Make Value") if show_make else ""
+    mac_value = st.text_input("MAC ID Value") if show_mac else ""
+    win_value = st.text_input("WIN KEY Value") if show_win else ""
+
     sold_to = st.text_input("Sold To / Customer Name")
 
 selected = []
 
-for enabled, key, label in [
-    (show_model, "model_no", settings["model"]),
-    (show_serial, "serial_no", settings["serial"]),
-    (show_make, "make", settings["make"]),
-    (show_mac, "mac", settings["mac"]),
-    (show_win, "win", settings["win"]),
-]:
-    if enabled:
-        selected.append((key, label))
+if show_model:
+    selected.append(("model_no", settings["model"]))
+
+if show_serial:
+    selected.append(("serial_no", settings["serial"]))
+
+if show_make:
+    selected.append(("make", settings["make"]))
+
+if show_mac:
+    selected.append(("mac", settings["mac"]))
+
+if show_win:
+    selected.append(("win", settings["win"]))
+
 
 if st.button(
     "📄 GENERATE CERTIFICATE",
@@ -397,36 +419,52 @@ if st.button(
     if show_serial:
         required["Serial No."] = serial_no
     if show_make:
-        required["Make"] = make
+        required["Make"] = make_value
     if show_mac:
-        required["MAC ID"] = mac
+        required["MAC ID"] = mac_value
     if show_win:
-        required["WIN KEY"] = win
+        required["WIN KEY"] = win_value
 
     missing = [
-        label for label, value in required.items()
+        label
+        for label, value in required.items()
         if value is None or not str(value).strip()
     ]
 
     if missing:
         st.error("Please fill in: " + ", ".join(missing))
     else:
-        pdf_bytes = create_pdf(
-            {
-                "date": selected_date,
-                "item": item_name.strip(),
-                "sold_to": sold_to.strip(),
-                "selected": selected,
-            },
-            settings
-        )
+        try:
+            pdf_bytes = create_pdf(
+                {
+                    "date": selected_date,
+                    "item": item_name.strip(),
+                    "sold_to": sold_to.strip(),
+                    "selected": selected,
 
-        st.session_state.certificate_pdf = pdf_bytes
-        st.session_state.certificate_filename = safe_filename(item_name)
-        st.success("Certificate generated successfully!")
+                    # These keys fix the KeyError.
+                    "model_no": model_no.strip(),
+                    "serial_no": serial_no.strip(),
+                    "make": make_value.strip(),
+                    "mac": mac_value.strip(),
+                    "win": win_value.strip(),
+                },
+                settings
+            )
+
+            st.session_state.certificate_pdf = pdf_bytes
+            st.session_state.certificate_filename = safe_filename(
+                item_name
+            )
+            st.success("Certificate generated successfully!")
+
+        except Exception as exc:
+            st.error(f"Certificate generation failed: {exc}")
+
 
 if "certificate_pdf" in st.session_state:
     st.subheader("Certificate Preview")
+
     try:
         st.image(
             pdf_to_image(st.session_state.certificate_pdf),
@@ -439,13 +477,16 @@ if "certificate_pdf" in st.session_state:
         "⬇️ DOWNLOAD CERTIFICATE PDF",
         data=st.session_state.certificate_pdf,
         file_name=st.session_state.get(
-            "certificate_filename", "test_certificate.pdf"
+            "certificate_filename",
+            "test_certificate.pdf"
         ),
         mime="application/pdf",
         use_container_width=True
     )
 
-    st.caption("To print, download the PDF and open it in a PDF viewer.")
+    st.caption(
+        "To print, download the PDF, open it and choose Print."
+    )
 
 st.markdown(
     "<p style='text-align:center; font-size:12px; padding-top:18px'>"
