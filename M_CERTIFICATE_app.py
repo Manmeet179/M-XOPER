@@ -162,7 +162,7 @@ def create_pdf(data, settings):
 
     date_text = data["date"].strftime(
         FORMATS[settings["date_format"]]
-    ).upper()
+    )
 
     pdf.setFillColorRGB(
         0.08, 0.08, 0.08
