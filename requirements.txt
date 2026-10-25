@@ -1,6 +1,3 @@
 streamlit
 reportlab
-pycupsstreamlit>=1.40
-reportlab>=4.0
-streamlit
-reportlab
+Pillow
