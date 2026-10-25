@@ -253,9 +253,7 @@ def create_pdf(data, settings):
     # Fixed footer
     pdf.setFont("Helvetica", 8)
     pdf.drawCentredString(
-        page_w / 2, 20, "Made by MEET MEVADA"
-    )
-
+        page_w / 2, 20, "") 
     pdf.save()
     buffer.seek(0)
     return buffer.getvalue()
