@@ -1,26 +1,14 @@
-import streamlit as st
+
 import io
-import base64
+import re
 from datetime import date
-from xml.sax.saxutils import escape
 
-from reportlab.lib import colors
+import streamlit as st
+import fitz
+from PIL import Image
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
-from reportlab.lib.units import mm
-from reportlab.platypus import (
-    SimpleDocTemplate,
-    Paragraph,
-    Spacer,
-    Table,
-    TableStyle,
-    KeepTogether,
-)
-
-# --------------------------------------------------
-# PAGE SETTINGS
-# --------------------------------------------------
+from reportlab.pdfgen import canvas
+from reportlab.pdfbase.pdfmetrics import stringWidth
 
 st.set_page_config(
     page_title="M-CERTIFICATE",
@@ -28,494 +16,439 @@ st.set_page_config(
     layout="wide"
 )
 
-DEFAULT_HEADINGS = {
+DEFAULTS = {
+    "date_format": "DD-MMM-YY",
     "item": "ITEM",
-    "model_no": "MODEL NO.",
-    "serial_no": "SERIAL NO.",
-    "make": "MAKE",
+    "model": "Model No.",
+    "serial": "Serial No.",
+    "make": "Make",
     "mac": "MAC ID",
-    "win_key": "WIN KEY",
+    "win": "WIN KEY",
+    "company": "OptoPixel Pvt. Ltd.",
 }
 
-DATE_FORMATS = {
-    "23-Jun-26": "%d-%b-%y",
-    "23-JUN-26": "%d-%b-%y",
-    "23-06-2026": "%d-%m-%Y",
-    "23/06/2026": "%d/%m/%Y",
-    "23-Jun-2026": "%d-%b-%Y",
-    "2026-06-23": "%Y-%m-%d",
+FORMATS = {
+    "DD-MMM-YY": "%d-%b-%y",
+    "DD-MMM-YYYY": "%d-%b-%Y",
+    "DD/MM/YYYY": "%d/%m/%Y",
+    "DD-MM-YYYY": "%d-%m-%Y",
+    "MM/DD/YYYY": "%m/%d/%Y",
+    "YYYY-MM-DD": "%Y-%m-%d",
 }
 
-# --------------------------------------------------
-# CSS
-# --------------------------------------------------
+EXAMPLES = {
+    "DD-MMM-YY": "22-OCT-26",
+    "DD-MMM-YYYY": "22-OCT-2026",
+    "DD/MM/YYYY": "22/10/2026",
+    "DD-MM-YYYY": "22-10-2026",
+    "MM/DD/YYYY": "10/22/2026",
+    "YYYY-MM-DD": "2026-10-22",
+}
 
-st.markdown(
-    """
-    <style>
-    .main-title {
-        text-align: center;
-        font-size: 42px;
-        font-weight: 800;
-        margin-top: 10px;
-        margin-bottom: 25px;
-    }
-
-    .made-by {
-        text-align: center;
-        color: #777777;
-        font-size: 13px;
-        padding-top: 15px;
-    }
-
-    div[data-testid="stFormSubmitButton"] button {
-        width: 100%;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# --------------------------------------------------
-# SESSION STATE
-# --------------------------------------------------
-
-if "certificate_headings" not in st.session_state:
-    st.session_state.certificate_headings = DEFAULT_HEADINGS.copy()
-
-if "certificate_company" not in st.session_state:
-    st.session_state.certificate_company = "OptoPixel Pvt. Ltd."
-
-if "certificate_date_format" not in st.session_state:
-    st.session_state.certificate_date_format = "23-Jun-26"
-
-if "certificate_pdf" not in st.session_state:
-    st.session_state.certificate_pdf = None
-
-# --------------------------------------------------
-# PDF GENERATION
-# --------------------------------------------------
-
-def safe_paragraph(value):
-    """Escape user-entered text so special characters display safely."""
-    value = "" if value is None else str(value)
-    value = escape(value)
-    value = value.replace("\n", "<br/>")
-    return value if value.strip() else "&#160;"
+if "pdf_settings" not in st.session_state:
+    st.session_state.pdf_settings = DEFAULTS.copy()
 
 
-def create_pdf(
-    selected_date,
-    date_format,
-    company_name,
-    item_name,
-    model_no,
-    serial_no,
-    make_value,
-    mac_value,
-    win_key,
-    headings,
-    customer_statement,
-):
-    pdf_buffer = io.BytesIO()
+def wrap_text(text, font, size, width):
+    """Wrap long text, including long values without spaces."""
+    result = []
+    line = ""
 
-    # A4 page, margins similar to the supplied reference image.
-    doc = SimpleDocTemplate(
-        pdf_buffer,
-        pagesize=A4,
-        rightMargin=17 * mm,
-        leftMargin=17 * mm,
-        topMargin=32 * mm,
-        bottomMargin=20 * mm,
-        title="TEST CERTIFICATE",
-        author="",
+    for word in str(text).split():
+        candidate = word if not line else line + " " + word
+
+        if stringWidth(candidate, font, size) <= width:
+            line = candidate
+            continue
+
+        if line:
+            result.append(line)
+            line = ""
+
+        if stringWidth(word, font, size) <= width:
+            line = word
+        else:
+            chunk = ""
+            for char in word:
+                if stringWidth(chunk + char, font, size) <= width:
+                    chunk += char
+                else:
+                    if chunk:
+                        result.append(chunk)
+                    chunk = char
+            line = chunk
+
+    if line:
+        result.append(line)
+
+    return result or [""]
+
+
+def safe_filename(name):
+    name = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_")
+    return f"test_certificate_{name or 'item'}.pdf"
+
+
+def create_pdf(data, settings):
+    buffer = io.BytesIO()
+    pdf = canvas.Canvas(buffer, pagesize=A4)
+    page_w, page_h = A4
+
+    left = 48
+    right = page_w - 48
+    content_w = right - left
+
+    # Date
+    date_text = data["date"].strftime(
+        FORMATS[settings["date_format"]]
+    ).upper()
+
+    pdf.setFillColorRGB(0.08, 0.08, 0.08)
+    pdf.setFont("Helvetica", 11)
+    pdf.drawRightString(right, page_h - 145, "Date: " + date_text)
+
+    # Certificate heading
+    title = "TEST CERTIFICATE"
+    title_y = page_h - 95
+    pdf.setFont("Helvetica-Bold", 16)
+    pdf.drawCentredString(page_w / 2, title_y, title)
+
+    title_width = stringWidth(title, "Helvetica-Bold", 16)
+    pdf.line(
+        page_w / 2 - title_width / 2,
+        title_y - 3,
+        page_w / 2 + title_width / 2,
+        title_y - 3
     )
 
-    styles = getSampleStyleSheet()
+    # To whom it may concern
+    concern = "TO WHOM IT MAY CONCERN"
+    concern_y = page_h - 190
+    pdf.setFont("Helvetica", 12)
+    pdf.drawCentredString(page_w / 2, concern_y, concern)
 
-    title_style = ParagraphStyle(
-        "CertificateTitle",
-        parent=styles["Normal"],
-        fontName="Helvetica-Bold",
-        fontSize=17,
-        leading=21,
-        alignment=TA_CENTER,
-        underline=True,
-        spaceAfter=0,
+    concern_width = stringWidth(concern, "Helvetica", 12)
+    pdf.line(
+        page_w / 2 - concern_width / 2,
+        concern_y - 3,
+        page_w / 2 + concern_width / 2,
+        concern_y - 3
     )
 
-    date_style = ParagraphStyle(
-        "CertificateDate",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=12,
-        leading=16,
-        alignment=TA_RIGHT,
-    )
+    selected = data["selected"]
+    labels = [label for _, label in selected]
 
-    concern_style = ParagraphStyle(
-        "Concern",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=12,
-        leading=16,
-        alignment=TA_CENTER,
-        underline=True,
-    )
+    intro = f'This test certificate is for {data["item"]}'
+    if labels:
+        intro += " having " + ", ".join(labels)
+    intro += " as per below table"
 
-    body_style = ParagraphStyle(
-        "CertificateBody",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=12,
-        leading=17,
-        alignment=TA_LEFT,
-        wordWrap="CJK",
-    )
+    intro_lines = wrap_text(intro, "Helvetica", 11, content_w)
+    intro_y = page_h - 245
 
-    italic_style = ParagraphStyle(
-        "CustomerStatement",
-        parent=body_style,
-        fontName="Helvetica-Oblique",
-    )
+    pdf.setFont("Helvetica", 11)
+    for i, line in enumerate(intro_lines):
+        pdf.drawString(left, intro_y - i * 15, line)
 
-    company_style = ParagraphStyle(
-        "Company",
-        parent=body_style,
-        fontName="Helvetica",
-    )
+    # Table
+    columns = [(settings["item"], data["item"])]
+    columns.extend((label, data[key]) for key, label in selected)
 
-    header_style = ParagraphStyle(
-        "TableHeader",
-        parent=styles["Normal"],
-        fontName="Helvetica-Bold",
-        fontSize=10,
-        leading=13,
-        alignment=TA_CENTER,
-        wordWrap="CJK",
-    )
+    count = len(columns)
 
-    cell_style = ParagraphStyle(
-        "TableCell",
-        parent=styles["Normal"],
-        fontName="Helvetica",
-        fontSize=10,
-        leading=13,
-        alignment=TA_CENTER,
-        wordWrap="CJK",
-    )
-
-    story = []
-
-    # 1. Title near the upper-middle area of the page
-    story.append(Spacer(1, 28 * mm))
-    story.append(
-        Paragraph(
-            "<u>TEST CERTIFICATE</u>",
-            title_style,
-        )
-    )
-
-    # 2. Date aligned to the right
-    story.append(Spacer(1, 18 * mm))
-
-    if selected_date is not None:
-        formatted_date = selected_date.strftime(date_format)
-        story.append(
-            Paragraph(
-                f"Date: {escape(formatted_date)}",
-                date_style,
-            )
-        )
+    if count == 1:
+        widths = [content_w]
     else:
-        story.append(Paragraph("Date:", date_style))
-
-    # 3. Centered heading
-    story.append(Spacer(1, 16 * mm))
-    story.append(
-        Paragraph(
-            "<u>TO WHOM IT MAY CONCERN</u>",
-            concern_style,
+        widths = (
+            [content_w * 0.27]
+            + [content_w * 0.73 / (count - 1)] * (count - 1)
         )
-    )
 
-    # 4. Introductory text
-    story.append(Spacer(1, 16 * mm))
-    story.append(
-        Paragraph(
-            "This test certificate is for "
-            f"{safe_paragraph(item_name)} having Model No. and "
-            "Serial No. as per below table:",
-            body_style,
+    font_size = 9
+    line_gap = 12
+    wrapped_columns = []
+    max_header = 1
+    max_value = 1
+
+    for i, (heading, value) in enumerate(columns):
+        available = widths[i] - 12
+
+        header_lines = wrap_text(
+            heading, "Helvetica-Bold", 9, available
         )
-    )
-
-    # 5. Table - show only columns with headings
-    all_columns = [
-        ("item", item_name),
-        ("model_no", model_no),
-        ("serial_no", serial_no),
-        ("make", make_value),
-        ("mac", mac_value),
-        ("win_key", win_key),
-    ]
-
-    visible_columns = [
-        (key, value)
-        for key, value in all_columns
-        if str(headings.get(key, "")).strip()
-    ]
-
-    if not visible_columns:
-        visible_columns = [("item", item_name)]
-
-    table_data = [
-        [
-            Paragraph(
-                safe_paragraph(headings.get(key, "")),
-                header_style,
-            )
-            for key, _ in visible_columns
-        ],
-        [
-            Paragraph(
-                safe_paragraph(value),
-                cell_style,
-            )
-            for _, value in visible_columns
-        ],
-    ]
-
-    available_width = A4[0] - 34 * mm
-    column_count = len(visible_columns)
-
-    # Equal widths keep the table inside the page margins.
-    col_widths = [available_width / column_count] * column_count
-
-    certificate_table = Table(
-        table_data,
-        colWidths=col_widths,
-        repeatRows=1,
-        hAlign="CENTER",
-    )
-
-    certificate_table.setStyle(
-        TableStyle(
-            [
-                ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                ("TOPPADDING", (0, 0), (-1, -1), 8),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 8),
-            ]
+        value_lines = wrap_text(
+            value, "Helvetica", font_size, available
         )
+
+        wrapped_columns.append((header_lines, value_lines))
+        max_header = max(max_header, len(header_lines))
+        max_value = max(max_value, len(value_lines))
+
+    header_h = max(30, max_header * line_gap + 12)
+    row_h = max(31, max_value * line_gap + 12)
+
+    table_top = intro_y - len(intro_lines) * 15 - 25
+    table_bottom = table_top - header_h - row_h
+
+    xs = [left]
+    for width in widths:
+        xs.append(xs[-1] + width)
+
+    pdf.setLineWidth(0.6)
+    pdf.line(left, table_top, right, table_top)
+    pdf.line(left, table_top - header_h, right, table_top - header_h)
+    pdf.line(left, table_bottom, right, table_bottom)
+
+    for x in xs:
+        pdf.line(x, table_top, x, table_bottom)
+
+    for i, (header_lines, value_lines) in enumerate(wrapped_columns):
+        center_x = (xs[i] + xs[i + 1]) / 2
+
+        y = table_top - (header_h - len(header_lines) * line_gap) / 2 - 9
+        pdf.setFont("Helvetica-Bold", 9)
+
+        for line in header_lines:
+            pdf.drawCentredString(center_x, y, line)
+            y -= line_gap
+
+        y = table_top - header_h - (
+            row_h - len(value_lines) * line_gap
+        ) / 2 - 8
+
+        pdf.setFont("Helvetica", font_size)
+        for line in value_lines:
+            pdf.drawCentredString(center_x, y, line)
+            y -= line_gap
+
+    # Certificate statement
+    y = table_bottom - 35
+    pdf.setFont("Helvetica", 10.5)
+
+    statement = (
+        "Specified component is tested for all its functionalities "
+        "and is performing satisfactorily and found OK."
     )
 
-    story.append(Spacer(1, 12 * mm))
-    story.append(certificate_table)
+    for line in wrap_text(statement, "Helvetica", 10.5, content_w):
+        pdf.drawString(left, y, line)
+        y -= 15
 
-    # 6. Test result statement
-    story.append(Spacer(1, 11 * mm))
-    story.append(
-        Paragraph(
-            "Specified component is tested for all its functionalities "
-            "and is performing satisfactorily and found OK.",
-            body_style,
+    y -= 25
+
+    sold_text = f'The above said item is sold to {data["sold_to"]}.'
+    pdf.setFont("Helvetica-Oblique", 10.5)
+
+    for line in wrap_text(
+        sold_text, "Helvetica-Oblique", 10.5, content_w
+    ):
+        pdf.drawString(left, y, line)
+        y -= 15
+
+    y -= 25
+    pdf.setFont("Helvetica", 10.5)
+    pdf.drawString(left, y, f'For {settings["company"]},')
+    pdf.drawString(left, y - 48, "Authorized")
+
+    # Fixed footer
+    pdf.setFont("Helvetica", 8)
+    pdf.drawCentredString(
+        page_w / 2, 20, "Made by MEET MEVADA"
+    )
+
+    pdf.save()
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def pdf_to_image(pdf_bytes):
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        pix = doc[0].get_pixmap(
+            matrix=fitz.Matrix(1.5, 1.5),
+            alpha=False
         )
-    )
-
-    # 7. Customer statement
-    story.append(Spacer(1, 12 * mm))
-    story.append(
-        Paragraph(
-            safe_paragraph(customer_statement),
-            italic_style,
-        )
-    )
-
-    # 8. Company and authorization
-    story.append(Spacer(1, 15 * mm))
-    story.append(
-        Paragraph(
-            f"For {safe_paragraph(company_name)},",
-            company_style,
-        )
-    )
-
-    story.append(Spacer(1, 13 * mm))
-    story.append(Paragraph("Authorized", company_style))
-
-    # IMPORTANT:
-    # No PDF footer is added here.
-    # "Made by MEET MEVADA" will NOT appear in the PDF.
-    doc.build(story)
-
-    pdf_buffer.seek(0)
-    return pdf_buffer.getvalue()
+        return Image.open(io.BytesIO(pix.tobytes("png"))).copy()
+    finally:
+        doc.close()
 
 
-# --------------------------------------------------
-# SIDEBAR
-# --------------------------------------------------
-
+# SIDEBAR SETTINGS
 with st.sidebar:
-    st.title("Settings")
-
-    st.subheader("Date Format")
-
-    selected_date_format_label = st.selectbox(
-        "Select date format",
-        options=list(DATE_FORMATS.keys()),
-        index=list(DATE_FORMATS.keys()).index(
-            st.session_state.certificate_date_format
-        ),
+    st.markdown(
+        "<h3 style='text-align:center'>M-CERTIFICATE</h3>",
+        unsafe_allow_html=True
     )
-
-    st.session_state.certificate_date_format = (
-        DATE_FORMATS[selected_date_format_label]
+    st.markdown(
+        "<p style='text-align:center'>Made by MEET MEVADA</p>",
+        unsafe_allow_html=True
     )
-
     st.divider()
-    st.subheader("Table Headings")
+    st.header("PDF Page Settings")
 
-    current_headings = st.session_state.certificate_headings
+    settings = st.session_state.pdf_settings
 
-    for key, default_value in DEFAULT_HEADINGS.items():
-        current_value = current_headings.get(key, default_value)
-        current_headings[key] = st.text_input(
-            f"{default_value} heading",
-            value=current_value,
-            key=f"heading_{key}",
+    with st.form("settings_form"):
+        date_format = st.selectbox(
+            "Date format",
+            list(FORMATS.keys()),
+            index=list(FORMATS).index(settings["date_format"]),
+            format_func=lambda f: f"{f} ({EXAMPLES[f]})"
         )
 
-    st.divider()
-    st.subheader("Company Details")
+        st.caption("Table headings")
+        item_heading = st.text_input("ITEM heading", settings["item"])
+        model_heading = st.text_input("Model No. heading", settings["model"])
+        serial_heading = st.text_input("Serial No. heading", settings["serial"])
+        make_heading = st.text_input("Make heading", settings["make"])
+        mac_heading = st.text_input("MAC ID heading", settings["mac"])
+        win_heading = st.text_input("WIN KEY heading", settings["win"])
+        company_name = st.text_input("Company name", settings["company"])
 
-    st.session_state.certificate_company = st.text_input(
-        "Company name in PDF",
-        value=st.session_state.certificate_company,
-    )
+        save_settings = st.form_submit_button(
+            "Save Settings", use_container_width=True
+        )
+
+        if save_settings:
+            st.session_state.pdf_settings = {
+                "date_format": date_format,
+                "item": item_heading.strip() or DEFAULTS["item"],
+                "model": model_heading.strip() or DEFAULTS["model"],
+                "serial": serial_heading.strip() or DEFAULTS["serial"],
+                "make": make_heading.strip() or DEFAULTS["make"],
+                "mac": mac_heading.strip() or DEFAULTS["mac"],
+                "win": win_heading.strip() or DEFAULTS["win"],
+                "company": company_name.strip() or DEFAULTS["company"],
+            }
+            st.rerun()
 
     if st.button("Restore Default Settings", use_container_width=True):
-        st.session_state.certificate_headings = DEFAULT_HEADINGS.copy()
-        st.session_state.certificate_company = "OptoPixel Pvt. Ltd."
-        st.session_state.certificate_date_format = "%d-%b-%y"
-
-        for key, value in DEFAULT_HEADINGS.items():
-            st.session_state[f"heading_{key}"] = value
-
+        st.session_state.pdf_settings = DEFAULTS.copy()
+        st.session_state.pop("certificate_pdf", None)
         st.rerun()
 
-    st.divider()
-    st.markdown(
-        '<div class="made-by">Made by MEET MEVADA</div>',
-        unsafe_allow_html=True,
-    )
 
-# --------------------------------------------------
-# MAIN PAGE
-# --------------------------------------------------
+settings = st.session_state.pdf_settings
 
+# HOME PAGE
 st.markdown(
-    '<div class="main-title">M-CERTIFICATE</div>',
-    unsafe_allow_html=True,
+    "<h1 style='text-align:center'>M-CERTIFICATE</h1>",
+    unsafe_allow_html=True
+)
+st.markdown(
+    "<p style='text-align:center'>Certificate Generator</p>",
+    unsafe_allow_html=True
 )
 
-st.subheader("Certificate Details")
+st.header("Certificate Details")
 
-with st.form("certificate_form"):
-    col1, col2 = st.columns(2)
+left_col, right_col = st.columns(2)
 
-    with col1:
-        selected_date = st.date_input(
-            "Certificate Date",
-            value=None,
-            format="DD/MM/YYYY",
-        )
-
-        item_name = st.text_input(
-            "Item",
-            value="CAMERA",
-        )
-
-        model_no = st.text_input("Model No.")
-
-        serial_no = st.text_input("Serial No.")
-
-    with col2:
-        make_value = st.text_input("Make")
-
-        mac_value = st.text_input("MAC ID")
-
-        win_key = st.text_input("WIN KEY")
-
-        customer_statement = st.text_input(
-            "Customer statement",
-            value="The above said item is sold to Amneal Ireland Ltd., Ireland.",
-        )
-
-    generate = st.form_submit_button(
-        "Generate PDF",
-        use_container_width=True,
+with left_col:
+    selected_date = st.date_input(
+        "Date",
+        value=None,
+        format="DD/MM/YYYY",
+        help="Select a date from the calendar."
     )
 
-if generate:
-    try:
+    item_name = st.text_input("Item Name")
+
+    st.markdown("**Select fields to show in table**")
+    show_model = st.checkbox("Model No.")
+    show_serial = st.checkbox("Serial No.")
+    show_make = st.checkbox("Make")
+    show_mac = st.checkbox("MAC ID")
+    show_win = st.checkbox("WIN KEY")
+
+with right_col:
+    model_no = st.text_input("Model No. Value") if show_model else ""
+    serial_no = st.text_input("Serial No. Value") if show_serial else ""
+    make = st.text_input("Make Value") if show_make else ""
+    mac = st.text_input("MAC ID Value") if show_mac else ""
+    win = st.text_input("WIN KEY Value") if show_win else ""
+    sold_to = st.text_input("Sold To / Customer Name")
+
+selected = []
+
+for enabled, key, label in [
+    (show_model, "model_no", settings["model"]),
+    (show_serial, "serial_no", settings["serial"]),
+    (show_make, "make", settings["make"]),
+    (show_mac, "mac", settings["mac"]),
+    (show_win, "win", settings["win"]),
+]:
+    if enabled:
+        selected.append((key, label))
+
+if st.button(
+    "📄 GENERATE CERTIFICATE",
+    type="primary",
+    use_container_width=True
+):
+    required = {
+        "Date": selected_date,
+        "Item Name": item_name,
+        "Sold To / Customer Name": sold_to,
+    }
+
+    if show_model:
+        required["Model No."] = model_no
+    if show_serial:
+        required["Serial No."] = serial_no
+    if show_make:
+        required["Make"] = make
+    if show_mac:
+        required["MAC ID"] = mac
+    if show_win:
+        required["WIN KEY"] = win
+
+    missing = [
+        label for label, value in required.items()
+        if value is None or not str(value).strip()
+    ]
+
+    if missing:
+        st.error("Please fill in: " + ", ".join(missing))
+    else:
         pdf_bytes = create_pdf(
-            selected_date=selected_date,
-            date_format=st.session_state.certificate_date_format,
-            company_name=st.session_state.certificate_company,
-            item_name=item_name.strip(),
-            model_no=model_no.strip(),
-            serial_no=serial_no.strip(),
-            make_value=make_value.strip(),
-            mac_value=mac_value.strip(),
-            win_key=win_key.strip(),
-            headings=st.session_state.certificate_headings.copy(),
-            customer_statement=customer_statement.strip(),
+            {
+                "date": selected_date,
+                "item": item_name.strip(),
+                "sold_to": sold_to.strip(),
+                "selected": selected,
+            },
+            settings
         )
 
         st.session_state.certificate_pdf = pdf_bytes
+        st.session_state.certificate_filename = safe_filename(item_name)
+        st.success("Certificate generated successfully!")
 
-    except Exception as error:
-        st.error(f"PDF generation failed: {error}")
-
-# --------------------------------------------------
-# PDF PREVIEW + DOWNLOAD
-# --------------------------------------------------
-
-if st.session_state.certificate_pdf:
-    st.divider()
-    st.subheader("Generated Certificate Preview")
-
-    pdf_bytes = st.session_state.certificate_pdf
-
-    base64_pdf = base64.b64encode(pdf_bytes).decode("utf-8")
-
-    pdf_display = f"""
-        <iframe
-            src="data:application/pdf;base64,{base64_pdf}"
-            width="100%"
-            height="850"
-            type="application/pdf"
-            style="border: 1px solid #cccccc; border-radius: 6px;"
-        ></iframe>
-    """
-
-    st.markdown(pdf_display, unsafe_allow_html=True)
+if "certificate_pdf" in st.session_state:
+    st.subheader("Certificate Preview")
+    try:
+        st.image(
+            pdf_to_image(st.session_state.certificate_pdf),
+            use_container_width=True
+        )
+    except Exception as exc:
+        st.warning(f"Preview could not be displayed: {exc}")
 
     st.download_button(
-        label="Download Certificate PDF",
-        data=pdf_bytes,
-        file_name="test_certificate.pdf",
+        "⬇️ DOWNLOAD CERTIFICATE PDF",
+        data=st.session_state.certificate_pdf,
+        file_name=st.session_state.get(
+            "certificate_filename", "test_certificate.pdf"
+        ),
         mime="application/pdf",
-        use_container_width=True,
+        use_container_width=True
     )
 
-# Footer only on the Streamlit page, never inside the PDF.
+    st.caption("To print, download the PDF and open it in a PDF viewer.")
+
 st.markdown(
-    '<div class="made-by">Made by MEET MEVADA</div>',
-    unsafe_allow_html=True,
-    )
+    "<p style='text-align:center; font-size:12px; padding-top:18px'>"
+    "Made by MEET MEVADA</p>",
+    unsafe_allow_html=True
+)
