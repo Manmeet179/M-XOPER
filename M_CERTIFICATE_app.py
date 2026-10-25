@@ -9,11 +9,17 @@ from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase.pdfmetrics import stringWidth
 
+
 st.set_page_config(
     page_title="M-CERTIFICATE",
     page_icon="📄",
     layout="wide"
 )
+
+
+# =========================
+# DEFAULT SETTINGS
+# =========================
 
 DEFAULTS = {
     "date_format": "DD-MMM-YY",
@@ -24,7 +30,7 @@ DEFAULTS = {
     "mac": "MAC ID",
     "win": "WIN KEY",
     "company": "OptoPixel Pvt. Ltd.",
-    "top_spacing_mm": 0,
+    "top_spacing_mm": 25,
 }
 
 FORMATS = {
@@ -45,12 +51,25 @@ EXAMPLES = {
     "YYYY-MM-DD": "2026-10-22",
 }
 
+
+# Initialize settings
 if "pdf_settings" not in st.session_state:
     st.session_state.pdf_settings = DEFAULTS.copy()
 
+else:
+    # Add any newly introduced settings without
+    # removing existing user preferences.
+    for key, value in DEFAULTS.items():
+        st.session_state.pdf_settings.setdefault(key, value)
+
+
+# =========================
+# TEXT WRAPPING
+# =========================
 
 def wrap_text(text, font, size, width):
     """Wrap text, including long values without spaces."""
+
     result = []
     line = ""
 
@@ -67,6 +86,7 @@ def wrap_text(text, font, size, width):
 
         if stringWidth(word, font, size) <= width:
             line = word
+
         else:
             chunk = ""
 
@@ -75,9 +95,11 @@ def wrap_text(text, font, size, width):
                     chunk + char, font, size
                 ) <= width:
                     chunk += char
+
                 else:
                     if chunk:
                         result.append(chunk)
+
                     chunk = char
 
             line = chunk
@@ -89,13 +111,26 @@ def wrap_text(text, font, size, width):
 
 
 def safe_filename(name):
-    name = re.sub(r"[^A-Za-z0-9]+", "_", name).strip("_")
+    name = re.sub(
+        r"[^A-Za-z0-9]+",
+        "_",
+        name
+    ).strip("_")
+
     return f"test_certificate_{name or 'item'}.pdf"
 
 
+# =========================
+# CREATE PDF
+# =========================
+
 def create_pdf(data, settings):
     buffer = io.BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=A4)
+
+    pdf = canvas.Canvas(
+        buffer,
+        pagesize=A4
+    )
 
     page_w, page_h = A4
 
@@ -106,20 +141,35 @@ def create_pdf(data, settings):
     # Adjustable top spacing
     # 1 mm = 72 / 25.4 PDF points
     top_spacing_mm = float(
-        settings.get("top_spacing_mm", 0)
+        settings.get("top_spacing_mm", 25)
     )
-    top_spacing_points = top_spacing_mm * 72 / 25.4
+
+    top_spacing_points = (
+        top_spacing_mm * 72 / 25.4
+    )
 
     # Move all certificate content downward
-    pdf.translate(0, -top_spacing_points)
+    pdf.translate(
+        0,
+        -top_spacing_points
+    )
 
-    # Date
+    # -------------------------
+    # DATE
+    # -------------------------
+
     date_text = data["date"].strftime(
         FORMATS[settings["date_format"]]
     ).upper()
 
-    pdf.setFillColorRGB(0.08, 0.08, 0.08)
-    pdf.setFont("Helvetica", 11)
+    pdf.setFillColorRGB(
+        0.08, 0.08, 0.08
+    )
+
+    pdf.setFont(
+        "Helvetica",
+        11
+    )
 
     pdf.drawRightString(
         right,
@@ -127,11 +177,18 @@ def create_pdf(data, settings):
         "Date: " + date_text
     )
 
-    # Certificate heading
+    # -------------------------
+    # CERTIFICATE TITLE
+    # -------------------------
+
     title = "TEST CERTIFICATE"
     title_y = page_h - 95
 
-    pdf.setFont("Helvetica-Bold", 16)
+    pdf.setFont(
+        "Helvetica-Bold",
+        16
+    )
+
     pdf.drawCentredString(
         page_w / 2,
         title_y,
@@ -139,7 +196,9 @@ def create_pdf(data, settings):
     )
 
     title_width = stringWidth(
-        title, "Helvetica-Bold", 16
+        title,
+        "Helvetica-Bold",
+        16
     )
 
     pdf.line(
@@ -149,11 +208,18 @@ def create_pdf(data, settings):
         title_y - 3
     )
 
-    # To whom it may concern
+    # -------------------------
+    # TO WHOM IT MAY CONCERN
+    # -------------------------
+
     concern = "TO WHOM IT MAY CONCERN"
     concern_y = page_h - 190
 
-    pdf.setFont("Helvetica", 12)
+    pdf.setFont(
+        "Helvetica",
+        12
+    )
+
     pdf.drawCentredString(
         page_w / 2,
         concern_y,
@@ -161,7 +227,9 @@ def create_pdf(data, settings):
     )
 
     concern_width = stringWidth(
-        concern, "Helvetica", 12
+        concern,
+        "Helvetica",
+        12
     )
 
     pdf.line(
@@ -171,11 +239,19 @@ def create_pdf(data, settings):
         concern_y - 3
     )
 
-    # Introductory text
-    selected = data["selected"]
-    labels = [label for _, label in selected]
+    # -------------------------
+    # INTRODUCTION
+    # -------------------------
 
-    intro = f'This test certificate is for {data["item"]}'
+    selected = data["selected"]
+
+    labels = [
+        label for _, label in selected
+    ]
+
+    intro = (
+        f'This test certificate is for {data["item"]}'
+    )
 
     if labels:
         intro += " having " + ", ".join(labels)
@@ -183,12 +259,18 @@ def create_pdf(data, settings):
     intro += " as per below table"
 
     intro_lines = wrap_text(
-        intro, "Helvetica", 11, content_w
+        intro,
+        "Helvetica",
+        11,
+        content_w
     )
 
     intro_y = page_h - 245
 
-    pdf.setFont("Helvetica", 11)
+    pdf.setFont(
+        "Helvetica",
+        11
+    )
 
     for i, line in enumerate(intro_lines):
         pdf.drawString(
@@ -197,11 +279,20 @@ def create_pdf(data, settings):
             line
         )
 
-    # Table data
-    columns = [(settings["item"], data["item"])]
+    # -------------------------
+    # TABLE DATA
+    # -------------------------
 
+    columns = [
+        (settings["item"], str(data["item"]))
+    ]
+
+    # FIXED: Read values safely from data dictionary
     columns.extend(
-        (label, data[key])
+        (
+            label,
+            str(data.get(key, ""))
+        )
         for key, label in selected
     )
 
@@ -209,17 +300,20 @@ def create_pdf(data, settings):
 
     if count == 1:
         widths = [content_w]
+
     else:
         widths = (
             [content_w * 0.27]
-            + [content_w * 0.73 / (count - 1)]
-            * (count - 1)
+            + [
+                content_w * 0.73 / (count - 1)
+            ] * (count - 1)
         )
 
     font_size = 9
     line_gap = 12
 
     wrapped_columns = []
+
     max_header = 1
     max_value = 1
 
@@ -245,93 +339,149 @@ def create_pdf(data, settings):
         )
 
         max_header = max(
-            max_header, len(header_lines)
+            max_header,
+            len(header_lines)
         )
 
         max_value = max(
-            max_value, len(value_lines)
+            max_value,
+            len(value_lines)
         )
 
     header_h = max(
-        30, max_header * line_gap + 12
+        30,
+        max_header * line_gap + 12
     )
 
     row_h = max(
-        31, max_value * line_gap + 12
+        31,
+        max_value * line_gap + 12
     )
 
     table_top = (
-        intro_y - len(intro_lines) * 15 - 25
+        intro_y
+        - len(intro_lines) * 15
+        - 25
     )
 
     table_bottom = (
-        table_top - header_h - row_h
+        table_top
+        - header_h
+        - row_h
     )
 
     xs = [left]
 
     for width in widths:
-        xs.append(xs[-1] + width)
+        xs.append(
+            xs[-1] + width
+        )
 
-    # Table borders
+    # -------------------------
+    # TABLE BORDERS
+    # -------------------------
+
     pdf.setLineWidth(0.6)
 
     pdf.line(
-        left, table_top,
-        right, table_top
+        left,
+        table_top,
+        right,
+        table_top
     )
 
     pdf.line(
-        left, table_top - header_h,
-        right, table_top - header_h
+        left,
+        table_top - header_h,
+        right,
+        table_top - header_h
     )
 
     pdf.line(
-        left, table_bottom,
-        right, table_bottom
+        left,
+        table_bottom,
+        right,
+        table_bottom
     )
 
     for x in xs:
         pdf.line(
-            x, table_top,
-            x, table_bottom
+            x,
+            table_top,
+            x,
+            table_bottom
         )
 
-    # Table headings and values
-    for i, (header_lines, value_lines) in enumerate(
-        wrapped_columns
-    ):
-        center_x = (xs[i] + xs[i + 1]) / 2
+    # -------------------------
+    # TABLE HEADINGS AND VALUES
+    # -------------------------
+
+    for i, (
+        header_lines,
+        value_lines
+    ) in enumerate(wrapped_columns):
+
+        center_x = (
+            xs[i] + xs[i + 1]
+        ) / 2
 
         y = (
             table_top
-            - (header_h - len(header_lines) * line_gap) / 2
+            - (
+                header_h
+                - len(header_lines) * line_gap
+            ) / 2
             - 9
         )
 
-        pdf.setFont("Helvetica-Bold", 9)
+        pdf.setFont(
+            "Helvetica-Bold",
+            9
+        )
 
         for line in header_lines:
-            pdf.drawCentredString(center_x, y, line)
+            pdf.drawCentredString(
+                center_x,
+                y,
+                line
+            )
+
             y -= line_gap
 
         y = (
             table_top
             - header_h
-            - (row_h - len(value_lines) * line_gap) / 2
+            - (
+                row_h
+                - len(value_lines) * line_gap
+            ) / 2
             - 8
         )
 
-        pdf.setFont("Helvetica", font_size)
+        pdf.setFont(
+            "Helvetica",
+            font_size
+        )
 
         for line in value_lines:
-            pdf.drawCentredString(center_x, y, line)
+            pdf.drawCentredString(
+                center_x,
+                y,
+                line
+            )
+
             y -= line_gap
 
-    # Certificate statement
+    # -------------------------
+    # TEST STATEMENT
+    # -------------------------
+
     y = table_bottom - 35
 
-    pdf.setFont("Helvetica", 10.5)
+    pdf.setFont(
+        "Helvetica",
+        10.5
+    )
 
     statement = (
         "Specified component is tested for all its functionalities "
@@ -339,19 +489,33 @@ def create_pdf(data, settings):
     )
 
     for line in wrap_text(
-        statement, "Helvetica", 10.5, content_w
+        statement,
+        "Helvetica",
+        10.5,
+        content_w
     ):
-        pdf.drawString(left, y, line)
+        pdf.drawString(
+            left,
+            y,
+            line
+        )
+
         y -= 15
 
     y -= 25
 
-    # Sold to
+    # -------------------------
+    # SOLD TO
+    # -------------------------
+
     sold_text = (
         f'The above said item is sold to {data["sold_to"]}.'
     )
 
-    pdf.setFont("Helvetica-Oblique", 10.5)
+    pdf.setFont(
+        "Helvetica-Oblique",
+        10.5
+    )
 
     for line in wrap_text(
         sold_text,
@@ -359,30 +523,48 @@ def create_pdf(data, settings):
         10.5,
         content_w
     ):
-        pdf.drawString(left, y, line)
+        pdf.drawString(
+            left,
+            y,
+            line
+        )
+
         y -= 15
 
-    # Company and authorization
+    # -------------------------
+    # COMPANY AND AUTHORIZATION
+    # -------------------------
+
     y -= 25
 
-    pdf.setFont("Helvetica", 10.5)
+    pdf.setFont(
+        "Helvetica",
+        10.5
+    )
 
     pdf.drawString(
-        left, y,
+        left,
+        y,
         f'For {settings["company"]},'
     )
 
     pdf.drawString(
-        left, y - 48,
+        left,
+        y - 48,
         "Authorized"
     )
 
-    # No creator credit in PDF
+    # No "Made by MEET MEVADA" in PDF
     pdf.save()
 
     buffer.seek(0)
+
     return buffer.getvalue()
 
+
+# =========================
+# PDF PREVIEW IMAGE
+# =========================
 
 def pdf_to_image(pdf_bytes):
     doc = fitz.open(
@@ -397,17 +579,24 @@ def pdf_to_image(pdf_bytes):
         )
 
         return Image.open(
-            io.BytesIO(pix.tobytes("png"))
+            io.BytesIO(
+                pix.tobytes("png")
+            )
         ).copy()
 
     finally:
         doc.close()
 
 
+# =========================
 # SIDEBAR SETTINGS
+# =========================
+
 with st.sidebar:
+
     st.markdown(
-        "<h3 style='text-align:center'>M-CERTIFICATE</h3>",
+        "<h3 style='text-align:center'>"
+        "M-CERTIFICATE</h3>",
         unsafe_allow_html=True
     )
 
@@ -418,6 +607,7 @@ with st.sidebar:
     )
 
     st.divider()
+
     st.header("PDF Page Settings")
 
     settings = st.session_state.pdf_settings
@@ -435,17 +625,17 @@ with st.sidebar:
             )
         )
 
-        # Adjustable PDF top spacing
+        # DEFAULT TOP SPACING = 25 MM
         top_spacing_mm = st.number_input(
             "PDF Content Top Spacing (mm)",
             min_value=0,
             max_value=60,
             value=int(
-                settings.get("top_spacing_mm", 0)
+                settings.get("top_spacing_mm", 25)
             ),
             step=1,
             help=(
-                "Increase this value to move all "
+                "Increase the value to move the "
                 "certificate content downward."
             )
         )
@@ -493,42 +683,51 @@ with st.sidebar:
         )
 
         if save_settings:
+
             st.session_state.pdf_settings = {
                 "date_format": date_format,
-                "top_spacing_mm": top_spacing_mm,
+                "top_spacing_mm": int(top_spacing_mm),
+
                 "item": (
                     item_heading.strip()
                     or DEFAULTS["item"]
                 ),
+
                 "model": (
                     model_heading.strip()
                     or DEFAULTS["model"]
                 ),
+
                 "serial": (
                     serial_heading.strip()
                     or DEFAULTS["serial"]
                 ),
+
                 "make": (
                     make_heading.strip()
                     or DEFAULTS["make"]
                 ),
+
                 "mac": (
                     mac_heading.strip()
                     or DEFAULTS["mac"]
                 ),
+
                 "win": (
                     win_heading.strip()
                     or DEFAULTS["win"]
                 ),
+
                 "company": (
                     company_name.strip()
                     or DEFAULTS["company"]
                 ),
             }
 
-            # Regenerate PDF using the updated settings
+            # Remove old PDF after settings change
             st.session_state.pop(
-                "certificate_pdf", None
+                "certificate_pdf",
+                None
             )
 
             st.rerun()
@@ -537,10 +736,14 @@ with st.sidebar:
         "Restore Default Settings",
         use_container_width=True
     ):
-        st.session_state.pdf_settings = DEFAULTS.copy()
+
+        st.session_state.pdf_settings = (
+            DEFAULTS.copy()
+        )
 
         st.session_state.pop(
-            "certificate_pdf", None
+            "certificate_pdf",
+            None
         )
 
         st.rerun()
@@ -549,9 +752,13 @@ with st.sidebar:
 settings = st.session_state.pdf_settings
 
 
+# =========================
 # HOME PAGE
+# =========================
+
 st.markdown(
-    "<h1 style='text-align:center'>M-CERTIFICATE</h1>",
+    "<h1 style='text-align:center'>"
+    "M-CERTIFICATE</h1>",
     unsafe_allow_html=True
 )
 
@@ -565,7 +772,9 @@ st.header("Certificate Details")
 
 left_col, right_col = st.columns(2)
 
+
 with left_col:
+
     selected_date = st.date_input(
         "Date",
         value=None,
@@ -573,9 +782,13 @@ with left_col:
         help="Select a date from the calendar."
     )
 
-    item_name = st.text_input("Item Name")
+    item_name = st.text_input(
+        "Item Name"
+    )
 
-    st.markdown("**Select fields to show in table**")
+    st.markdown(
+        "**Select fields to show in table**"
+    )
 
     show_model = st.checkbox("Model No.")
     show_serial = st.checkbox("Serial No.")
@@ -585,6 +798,7 @@ with left_col:
 
 
 with right_col:
+
     model_no = (
         st.text_input("Model No. Value")
         if show_model else ""
@@ -615,7 +829,10 @@ with right_col:
     )
 
 
-# Selected table fields
+# =========================
+# SELECTED TABLE FIELDS
+# =========================
+
 selected = []
 
 for enabled, key, label in [
@@ -625,16 +842,23 @@ for enabled, key, label in [
     (show_mac, "mac", settings["mac"]),
     (show_win, "win", settings["win"]),
 ]:
+
     if enabled:
-        selected.append((key, label))
+        selected.append(
+            (key, label)
+        )
 
 
+# =========================
 # GENERATE CERTIFICATE
+# =========================
+
 if st.button(
     "📄 GENERATE CERTIFICATE",
     type="primary",
     use_container_width=True
 ):
+
     required = {
         "Date": selected_date,
         "Item Name": item_name,
@@ -663,22 +887,36 @@ if st.button(
     ]
 
     if missing:
+
         st.error(
-            "Please fill in: " + ", ".join(missing)
+            "Please fill in: "
+            + ", ".join(missing)
         )
 
     else:
+
+        # FIXED: Include every field value in data
+        pdf_data = {
+            "date": selected_date,
+            "item": item_name.strip(),
+            "sold_to": sold_to.strip(),
+            "selected": selected,
+
+            "model_no": model_no,
+            "serial_no": serial_no,
+            "make": make,
+            "mac": mac,
+            "win": win,
+        }
+
         pdf_bytes = create_pdf(
-            {
-                "date": selected_date,
-                "item": item_name.strip(),
-                "sold_to": sold_to.strip(),
-                "selected": selected,
-            },
+            pdf_data,
             settings
         )
 
-        st.session_state.certificate_pdf = pdf_bytes
+        st.session_state.certificate_pdf = (
+            pdf_bytes
+        )
 
         st.session_state.certificate_filename = (
             safe_filename(item_name)
@@ -689,40 +927,56 @@ if st.button(
         )
 
 
+# =========================
 # PDF PREVIEW AND DOWNLOAD
+# =========================
+
 if "certificate_pdf" in st.session_state:
+
     st.subheader("Certificate Preview")
 
     try:
+
+        preview_image = pdf_to_image(
+            st.session_state.certificate_pdf
+        )
+
         st.image(
-            pdf_to_image(
-                st.session_state.certificate_pdf
-            ),
+            preview_image,
             use_container_width=True
         )
 
     except Exception as exc:
+
         st.warning(
             f"Preview could not be displayed: {exc}"
         )
 
     st.download_button(
         "⬇️ DOWNLOAD CERTIFICATE PDF",
+
         data=st.session_state.certificate_pdf,
+
         file_name=st.session_state.get(
             "certificate_filename",
             "test_certificate.pdf"
         ),
+
         mime="application/pdf",
+
         use_container_width=True
     )
 
     st.caption(
-        "To print, download the PDF and open it in a PDF viewer."
+        "To print, download the PDF and open it "
+        "in a PDF viewer."
     )
 
 
-# Footer on the website only, not in the PDF
+# =========================
+# WEBSITE FOOTER ONLY
+# =========================
+
 st.markdown(
     "<p style='text-align:center; "
     "font-size:12px; padding-top:18px'>"
