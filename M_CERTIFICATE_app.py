@@ -1,10 +1,10 @@
-
 import io
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -23,49 +23,45 @@ from reportlab.lib.utils import ImageReader
 st.set_page_config(
     page_title="M-CERTIFICATE",
     page_icon="🖨️",
-    layout="wide"
+    layout="wide",
 )
 
-st.markdown("""
-<style>
-.stApp {
-    background: #0b1220;
-    color: #eef2ff;
-}
-.block-container {
-    max-width: 1450px;
-    padding-top: 1.2rem;
-}
-h1, h2, h3, h4, label, p {
-    color: #eef2ff !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
 st.title("M-CERTIFICATE")
-st.caption("A4 Test Certificate • PDF • Linux CUPS Printing • Multi-Page Scanner")
+st.caption("PRINT | SCANNER • Certificate PDF + Word • Linux CUPS/SANE")
 
 
 # ============================================================
-# PATHS AND FILE HELPERS
+# SAVE LOCATION
 # ============================================================
 
 def get_mcertificate_root():
-    """Save under ~/M-CERTIFICATE on Linux."""
-    root = Path.home() / "M-CERTIFICATE"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    """
+    Linux server storage.
+    Files saved here belong to the SERVER, not the user's PC.
+    """
+    preferred = Path("/home/appuser/M-CERTIFICATE")
+
+    try:
+        preferred.mkdir(parents=True, exist_ok=True)
+        test_file = preferred / ".write_test"
+        test_file.write_text("ok", encoding="utf-8")
+        test_file.unlink(missing_ok=True)
+        return preferred
+    except OSError:
+        fallback = Path.home() / "M-CERTIFICATE"
+        fallback.mkdir(parents=True, exist_ok=True)
+        return fallback
 
 
 def safe_folder_name(name, default="Customer"):
-    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "", str(name).strip())
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "", str(name or "").strip())
     name = re.sub(r"\s+", " ", name).strip(" .")
     return name or default
 
 
-def safe_filename(name, default="document"):
-    name = safe_folder_name(name, default)
-    name = re.sub(r"\s+", "_", name)
+def safe_filename(name, default="document.pdf"):
+    name = Path(str(name or "")).name
+    name = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', "", name).strip(" .")
     if not name:
         name = default
     if not name.lower().endswith(".pdf"):
@@ -76,372 +72,94 @@ def safe_filename(name, default="document"):
 def get_certificate_folder(cert_date, sold_to):
     root = get_mcertificate_root()
     date_folder = cert_date.strftime("%d-%b-%y")
-    customer_folder = safe_folder_name(sold_to)
-    folder = root / date_folder / customer_folder
+    company_folder = safe_folder_name(sold_to)
+    folder = root / date_folder / company_folder
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 
 
-def parse_date(value):
-    for fmt in ("%d-%b-%y", "%d-%m-%Y", "%Y-%m-%d"):
-        try:
-            return datetime.strptime(value.strip(), fmt).date()
-        except ValueError:
-            pass
-    return None
+def save_bytes(path, data):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+    return path
 
 
 # ============================================================
-# LINUX PRINTERS - CUPS
-# ============================================================
-
-def get_printers():
-    try:
-        result = subprocess.run(
-            ["lpstat", "-p"],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        printers = []
-
-        for line in result.stdout.splitlines():
-            match = re.match(r"printer\s+(\S+)", line)
-            if match:
-                printers.append(match.group(1))
-
-        return sorted(set(printers))
-
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return []
-
-
-def get_default_printer():
-    try:
-        result = subprocess.run(
-            ["lpstat", "-d"],
-            capture_output=True,
-            text=True,
-            timeout=10
-        )
-        match = re.search(
-            r"system default destination:\s*(\S+)",
-            result.stdout
-        )
-        return match.group(1) if match else ""
-    except Exception:
-        return ""
-
-
-def print_pdf(pdf_bytes, printer, copies=1):
-    if not printer:
-        raise RuntimeError("Please select a printer.")
-
-    fd, temp_path = tempfile.mkstemp(suffix=".pdf")
-
-    try:
-        with os.fdopen(fd, "wb") as f:
-            f.write(pdf_bytes)
-
-        result = subprocess.run(
-            [
-                "lp",
-                "-d", printer,
-                "-n", str(int(copies)),
-                "-o", "media=A4",
-                temp_path
-            ],
-            capture_output=True,
-            text=True,
-            timeout=90
-        )
-
-        if result.returncode != 0:
-            raise RuntimeError(
-                result.stderr.strip() or "CUPS printing failed."
-            )
-
-        return result.stdout.strip()
-
-    finally:
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
-
-
-# ============================================================
-# LINUX SCANNER - SANE
-# ============================================================
-
-def find_scanners():
-    try:
-        result = subprocess.run(
-            ["scanimage", "-L"],
-            capture_output=True,
-            text=True,
-            timeout=20
-        )
-
-        output = result.stdout + "\n" + result.stderr
-        scanners = []
-
-        for line in output.splitlines():
-            line = line.strip()
-
-            # Typical output:
-            # device `escl:http://.../eSCL' is a ...
-            match = re.match(r"device\s+`(.+?)'\s+is a\s+(.+)", line)
-
-            if match:
-                scanners.append({
-                    "device": match.group(1),
-                    "name": match.group(2)
-                })
-
-        return scanners
-
-    except FileNotFoundError:
-        raise RuntimeError(
-            "scanimage is not installed. Install sane-utils."
-        )
-
-
-def scan_one_page(device, resolution=200, mode="Color"):
-    """Scan one page. Returns image bytes in memory."""
-    cmd = [
-        "scanimage",
-        "--device-name", device,
-        "--format=jpeg",
-        "--resolution", str(int(resolution))
-    ]
-
-    if mode == "Gray":
-        cmd += ["--mode", "Gray"]
-    elif mode == "Lineart":
-        cmd += ["--mode", "Lineart"]
-    else:
-        cmd += ["--mode", "Color"]
-
-    result = subprocess.run(
-        cmd,
-        capture_output=True,
-        timeout=180
-    )
-
-    if result.returncode != 0 or not result.stdout:
-        error = result.stderr.decode(errors="replace").strip()
-        raise RuntimeError(error or "Scanner returned no image data.")
-
-    # Verify the image before accepting it.
-    try:
-        with Image.open(io.BytesIO(result.stdout)) as image:
-            image.verify()
-    except Exception as exc:
-        raise RuntimeError(f"Invalid scanner image: {exc}")
-
-    return result.stdout
-
-
-# ============================================================
-# CERTIFICATE PDF
-# ============================================================
-
-def wrap_words(text, font, size, max_width):
-    lines = []
-    current = ""
-
-    for word in str(text).split():
-        test = word if not current else current + " " + word
-
-        if stringWidth(test, font, size) <= max_width:
-            current = test
-        else:
-            if current:
-                lines.append(current)
-            current = word
-
-    if current:
-        lines.append(current)
-
-    return lines
-
-
-def make_certificate_pdf(data):
-    output = io.BytesIO()
-    pdf = canvas.Canvas(output, pagesize=A4)
-    width, height = A4
-
-    pdf.setFont("Helvetica", 11)
-    pdf.drawRightString(
-        width - 55,
-        height - 100,
-        "Date: " + data["date"].strftime("%d-%b-%y")
-    )
-
-    title = "TEST CERTIFICATE"
-    pdf.setFont("Helvetica-Bold", 16)
-    pdf.drawCentredString(width / 2, height - 145, title)
-
-    tw = stringWidth(title, "Helvetica-Bold", 16)
-    pdf.line(
-        width / 2 - tw / 2, height - 149,
-        width / 2 + tw / 2, height - 149
-    )
-
-    subtitle = "TO WHOM IT MAY CONCERN"
-    pdf.setFont("Helvetica", 12)
-    pdf.drawCentredString(width / 2, height - 190, subtitle)
-
-    labels = [label for _, label in data["selected_columns"]]
-
-    if not labels:
-        intro = (
-            f"This test certificate is for {data['item_name']} "
-            "as per below table"
-        )
-    else:
-        intro = (
-            f"This test certificate is for {data['item_name']} "
-            f"having {', '.join(labels)} as per below table"
-        )
-
-    pdf.setFont("Helvetica", 11)
-    intro_y = height - 230
-
-    for i, line in enumerate(wrap_words(intro, "Helvetica", 11, 490)[:3]):
-        pdf.drawString(55, intro_y - i * 16, line)
-
-    columns = [("ITEM", data["item_name"])]
-
-    for key, label in data["selected_columns"]:
-        columns.append((label, data[key]))
-
-    left = 55
-    right = width - 55
-    top = height - 300
-    header_h = 30
-    row_h = 32
-    bottom = top - header_h - row_h
-    col_width = (right - left) / len(columns)
-
-    pdf.setLineWidth(0.6)
-
-    for i in range(len(columns) + 1):
-        x = left + i * col_width
-        pdf.line(x, top, x, bottom)
-
-    for y in (top, top - header_h, bottom):
-        pdf.line(left, y, right, y)
-
-    for i, (label, value) in enumerate(columns):
-        x1 = left + i * col_width
-        x2 = x1 + col_width
-        center = (x1 + x2) / 2
-
-        pdf.setFont("Helvetica-Bold", 9)
-        pdf.drawCentredString(center, top - 19, str(label)[:40])
-
-        value_text = str(value)
-        font_size = 10
-
-        while (
-            font_size > 6
-            and stringWidth(value_text, "Helvetica", font_size)
-            > col_width - 8
-        ):
-            font_size -= 0.5
-
-        pdf.setFont("Helvetica", font_size)
-        pdf.drawCentredString(center, bottom + 11, value_text)
-
-    body_y = height - 375
-    pdf.setFont("Helvetica", 11)
-
-    pdf.drawString(
-        55, body_y,
-        "Specified component is tested for all its functionalities and is performing"
-    )
-    pdf.drawString(
-        55, body_y - 18,
-        "satisfactorily and found OK."
-    )
-
-    sold_text = f"The above said item is sold to {data['sold_to']}."
-    pdf.setFont("Helvetica-Oblique", 11)
-
-    for i, line in enumerate(
-        wrap_words(sold_text, "Helvetica-Oblique", 11, 490)[:3]
-    ):
-        pdf.drawString(55, body_y - 60 - i * 16, line)
-
-    pdf.setFont("Helvetica", 11)
-    pdf.drawString(55, height - 525, "For OptoPixel Pvt. Ltd.,")
-    pdf.drawString(55, height - 580, "Authorized")
-
-    pdf.showPage()
-    pdf.save()
-
-    output.seek(0)
-    return output.getvalue()
-
-
-# ============================================================
-# WORD CERTIFICATE
+# WORD DOCUMENT
 # ============================================================
 
 def certificate_word_bytes(data):
-    from docx import Document
-    from docx.shared import Pt
-    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    try:
+        from docx import Document
+        from docx.shared import Pt
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+    except ImportError as exc:
+        raise RuntimeError(
+            "Missing python-docx. Add python-docx to requirements.txt."
+        ) from exc
 
     doc = Document()
 
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    run = p.add_run("Date: " + data["date"].strftime("%d-%b-%y"))
-    run.font.size = Pt(11)
+    r = p.add_run("Date: " + data["date"].strftime("%d-%b-%y"))
+    r.font.size = Pt(11)
 
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run = p.add_run("TEST CERTIFICATE")
-    run.bold = True
-    run.font.size = Pt(16)
+    r = p.add_run("TEST CERTIFICATE")
+    r.bold = True
+    r.font.size = Pt(16)
 
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p.add_run("TO WHOM IT MAY CONCERN")
+    r = p.add_run("TO WHOM IT MAY CONCERN")
+    r.font.size = Pt(12)
 
     labels = [label for _, label in data["selected_columns"]]
-    intro = f"This test certificate is for {data['item_name']}"
 
-    if labels:
-        intro += " having " + ", ".join(labels)
+    if not labels:
+        intro = f"This test certificate is for {data['item_name']} as per below table"
+    elif len(labels) == 1:
+        intro = (
+            f"This test certificate is for {data['item_name']} "
+            f"having {labels[0]} as per below table"
+        )
+    elif len(labels) == 2:
+        intro = (
+            f"This test certificate is for {data['item_name']} "
+            f"having {labels[0]} and {labels[1]} as per below table"
+        )
+    else:
+        intro = (
+            f"This test certificate is for {data['item_name']} "
+            f"having {', '.join(labels[:-1])} and {labels[-1]} "
+            "as per below table"
+        )
 
-    intro += " as per below table"
     doc.add_paragraph(intro)
 
-    columns = [("ITEM", data["item_name"])]
+    columns = [("item_name", "ITEM", data["item_name"])]
     for key, label in data["selected_columns"]:
-        columns.append((label, data[key]))
+        columns.append((key, label, data[key]))
 
     table = doc.add_table(rows=1, cols=len(columns))
     table.style = "Table Grid"
 
-    for i, (label, _) in enumerate(columns):
+    for i, (_, label, _) in enumerate(columns):
         table.rows[0].cells[i].text = str(label)
 
     row = table.add_row()
-    for i, (_, value) in enumerate(columns):
+    for i, (_, _, value) in enumerate(columns):
         row.cells[i].text = str(value)
 
+    doc.add_paragraph()
     doc.add_paragraph(
         "Specified component is tested for all its functionalities "
         "and is performing satisfactorily and found OK."
     )
-    doc.add_paragraph(
-        f"The above said item is sold to {data['sold_to']}."
-    )
+    doc.add_paragraph(f'The above said item is sold to {data["sold_to"]}.')
     doc.add_paragraph()
     doc.add_paragraph("For OptoPixel Pvt. Ltd.,")
     doc.add_paragraph()
@@ -449,55 +167,360 @@ def certificate_word_bytes(data):
 
     output = io.BytesIO()
     doc.save(output)
+    return output.getvalue()
+
+
+# ============================================================
+# CERTIFICATE PDF
+# ============================================================
+
+def wrap_words(text, font, size, max_width):
+    words = str(text).split()
+    lines = []
+    line = ""
+
+    for word in words:
+        test = word if not line else line + " " + word
+
+        if stringWidth(test, font, size) <= max_width:
+            line = test
+        else:
+            if line:
+                lines.append(line)
+            line = word
+
+    if line:
+        lines.append(line)
+
+    return lines
+
+
+def make_certificate_pdf(data):
+    output = io.BytesIO()
+    c = canvas.Canvas(output, pagesize=A4)
+    width, height = A4
+
+    c.setFont("Helvetica", 12)
+    c.drawRightString(
+        width - 50,
+        height - 100,
+        "Date: " + data["date"].strftime("%d-%b-%y"),
+    )
+
+    title = "TEST CERTIFICATE"
+    c.setFont("Helvetica-Bold", 16)
+    title_y = height - 145
+    c.drawCentredString(width / 2, title_y, title)
+
+    title_width = stringWidth(title, "Helvetica-Bold", 16)
+    c.line(
+        width / 2 - title_width / 2,
+        title_y - 3,
+        width / 2 + title_width / 2,
+        title_y - 3,
+    )
+
+    subtitle = "TO WHOM IT MAY CONCERN"
+    c.setFont("Helvetica", 12)
+    subtitle_y = height - 220
+    c.drawCentredString(width / 2, subtitle_y, subtitle)
+
+    subtitle_width = stringWidth(subtitle, "Helvetica", 12)
+    c.line(
+        width / 2 - subtitle_width / 2,
+        subtitle_y - 3,
+        width / 2 + subtitle_width / 2,
+        subtitle_y - 3,
+    )
+
+    labels = [label for _, label in data["selected_columns"]]
+    item_name = data["item_name"]
+
+    if not labels:
+        intro = f"This test certificate is for {item_name} as per below table"
+    elif len(labels) == 1:
+        intro = f"This test certificate is for {item_name} having {labels[0]} as per below table"
+    elif len(labels) == 2:
+        intro = f"This test certificate is for {item_name} having {labels[0]} and {labels[1]} as per below table"
+    else:
+        intro = (
+            f"This test certificate is for {item_name} having "
+            f"{', '.join(labels[:-1])} and {labels[-1]} as per below table"
+        )
+
+    c.setFont("Helvetica", 11)
+    intro_y = height - 260
+
+    for i, line in enumerate(wrap_words(intro, "Helvetica", 11, 490)[:3]):
+        c.drawString(50, intro_y - i * 16, line)
+
+    columns = [("item_name", "ITEM", data["item_name"])]
+    for key, label in data["selected_columns"]:
+        columns.append((key, label, data[key]))
+
+    left = 50
+    right = width - 50
+    table_top = height - 330
+    header_h = 32
+    row_h = 35
+    table_bottom = table_top - header_h - row_h
+    col_width = (right - left) / len(columns)
+
+    xs = [left + i * col_width for i in range(len(columns) + 1)]
+
+    c.setLineWidth(0.6)
+    for x in xs:
+        c.line(x, table_top, x, table_bottom)
+
+    for y in (table_top, table_top - header_h, table_bottom):
+        c.line(left, y, right, y)
+
+    for i, (_, label, _) in enumerate(columns):
+        x_center = (xs[i] + xs[i + 1]) / 2
+        c.setFont("Helvetica-Bold", 9)
+        c.drawCentredString(x_center, table_top - 20, str(label)[:35])
+
+    for i, (_, _, value) in enumerate(columns):
+        x_center = (xs[i] + xs[i + 1]) / 2
+        max_width = xs[i + 1] - xs[i] - 8
+        text = str(value)
+        font_size = 9
+
+        while font_size > 6 and stringWidth(text, "Helvetica", font_size) > max_width:
+            font_size -= 0.25
+
+        c.setFont("Helvetica", font_size)
+        c.drawCentredString(x_center, table_bottom + 12, text)
+
+    body_y = height - 415
+    c.setFont("Helvetica", 10.5)
+    c.drawString(
+        50,
+        body_y,
+        "Specified component is tested for all its functionalities and is performing",
+    )
+    c.drawString(50, body_y - 17, "satisfactorily and found OK.")
+
+    sold_text = f'The above said item is sold to {data["sold_to"]}.'
+    c.setFont("Helvetica-Oblique", 10.5)
+
+    for i, line in enumerate(wrap_words(sold_text, "Helvetica-Oblique", 10.5, 490)[:3]):
+        c.drawString(50, height - 480 - i * 16, line)
+
+    c.setFont("Helvetica", 10.5)
+    c.drawString(50, height - 550, "For OptoPixel Pvt. Ltd.,")
+    c.drawString(50, height - 600, "Authorized")
+
+    c.showPage()
+    c.save()
+    return output.getvalue()
+
+
+# ============================================================
+# SAVE CERTIFICATE + CREATE DOWNLOAD ZIP
+# ============================================================
+
+def save_certificate_files(data, pdf_bytes, filename_base):
+    folder = get_certificate_folder(data["date"], data["sold_to"])
+    base = safe_folder_name(filename_base, "test_certificate")
+    base = os.path.splitext(base)[0]
+
+    pdf_path = save_bytes(folder / f"{base}.pdf", pdf_bytes)
+    word_bytes = certificate_word_bytes(data)
+    docx_path = save_bytes(folder / f"{base}.docx", word_bytes)
+
+    return folder, pdf_path, docx_path, word_bytes
+
+
+def create_download_zip(files, date_folder, company_folder):
+    """
+    files = [(filename, bytes), ...]
+    ZIP contains:
+    M-CERTIFICATE/date/company/filename
+    """
+    output = io.BytesIO()
+    prefix = f"M-CERTIFICATE/{date_folder}/{company_folder}"
+
+    with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as zf:
+        for filename, file_bytes in files:
+            zf.writestr(f"{prefix}/{filename}", file_bytes)
+
     output.seek(0)
     return output.getvalue()
 
 
-def save_certificate_files(data, pdf_bytes, filename):
-    folder = get_certificate_folder(data["date"], data["sold_to"])
+# ============================================================
+# LINUX CUPS PRINTER HELPERS
+# ============================================================
 
-    base = safe_folder_name(filename, "test_certificate")
-    base = os.path.splitext(base)[0]
+def get_linux_printers():
+    """
+    Returns printers visible to the Linux server's CUPS system.
+    This does NOT list printers attached to the user's Windows PC.
+    """
+    if not shutil.which("lpstat"):
+        return [], "CUPS command 'lpstat' is not installed on this server."
 
-    pdf_path = folder / (base + ".pdf")
-    docx_path = folder / (base + ".docx")
+    try:
+        result = subprocess.run(
+            ["lpstat", "-e"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        if result.returncode != 0:
+            return [], result.stderr.strip() or "Could not query CUPS."
 
-    pdf_path.write_bytes(pdf_bytes)
-    docx_path.write_bytes(certificate_word_bytes(data))
+        return [line.strip() for line in result.stdout.splitlines() if line.strip()], None
 
-    return folder, pdf_path, docx_path
+    except Exception as exc:
+        return [], str(exc)
+
+
+def print_pdf_linux(pdf_bytes, printer_name, copies=1):
+    if not shutil.which("lp"):
+        raise RuntimeError("CUPS printing command 'lp' is not installed.")
+
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp:
+        temp.write(pdf_bytes)
+        temp_path = temp.name
+
+    try:
+        result = subprocess.run(
+            [
+                "lp",
+                "-d", printer_name,
+                "-n", str(int(copies)),
+                "-o", "media=A4",
+                temp_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "CUPS printing failed.")
+
+        return result.stdout.strip() or "Print job submitted to CUPS."
+
+    finally:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
+
+
+# ============================================================
+# LINUX SANE SCANNER HELPERS
+# ============================================================
+
+def get_linux_scanners():
+    """
+    List scanners visible to SANE on the Linux server.
+    """
+    if not shutil.which("scanimage"):
+        return [], "SANE command 'scanimage' is not installed on this server."
+
+    result = subprocess.run(
+        ["scanimage", "-L"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+
+    combined = (result.stdout or "") + "\n" + (result.stderr or "")
+    devices = []
+
+    for line in combined.splitlines():
+        match = re.search(r"device [`'](.+?)[`'] is a (.+)", line.strip())
+        if match:
+            devices.append({
+                "device": match.group(1),
+                "name": match.group(2),
+            })
+
+    if not devices:
+        return [], combined.strip() or "No SANE scanners found."
+
+    return devices, None
+
+
+def scan_one_page_sane(device_name):
+    if not shutil.which("scanimage"):
+        raise RuntimeError("SANE 'scanimage' command is not installed.")
+
+    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as temp:
+        temp_path = temp.name
+
+    try:
+        result = subprocess.run(
+            [
+                "scanimage",
+                "-d", device_name,
+                "--format=jpeg",
+                "--resolution", "150",
+                "-o", temp_path,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            check=False,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "SANE scan failed.")
+
+        image_bytes = Path(temp_path).read_bytes()
+
+        if not image_bytes:
+            raise RuntimeError("Scanner returned an empty image.")
+
+        with Image.open(io.BytesIO(image_bytes)) as im:
+            im.verify()
+
+        return image_bytes
+
+    finally:
+        try:
+            os.unlink(temp_path)
+        except OSError:
+            pass
 
 
 def make_scanned_pdf(pages):
     if not pages:
-        raise RuntimeError("No scanned pages available.")
+        return None
 
     output = io.BytesIO()
     pdf = canvas.Canvas(output, pagesize=A4)
-    page_w, page_h = A4
+    page_width, page_height = A4
     margin = 20
 
     for page_bytes in pages:
-        with Image.open(io.BytesIO(page_bytes)) as source:
-            image = source.convert("RGB")
-            img_w, img_h = image.size
+        with Image.open(io.BytesIO(page_bytes)) as original:
+            image = original.convert("RGB")
+            img_width, img_height = image.size
 
             scale = min(
-                (page_w - 2 * margin) / img_w,
-                (page_h - 2 * margin) / img_h
+                (page_width - margin * 2) / img_width,
+                (page_height - margin * 2) / img_height,
             )
 
-            draw_w = img_w * scale
-            draw_h = img_h * scale
-            x = (page_w - draw_w) / 2
-            y = (page_h - draw_h) / 2
+            draw_width = img_width * scale
+            draw_height = img_height * scale
+            x = (page_width - draw_width) / 2
+            y = (page_height - draw_height) / 2
 
             pdf.drawImage(
                 ImageReader(image),
                 x, y,
-                width=draw_w,
-                height=draw_h,
-                preserveAspectRatio=True
+                width=draw_width,
+                height=draw_height,
+                preserveAspectRatio=True,
             )
             pdf.showPage()
 
@@ -506,29 +529,19 @@ def make_scanned_pdf(pages):
     return output.getvalue()
 
 
-def save_scanned_pdf(pdf_bytes, sold_to, filename):
-    folder = get_certificate_folder(
-        datetime.now().date(),
-        sold_to or "Scanned"
-    )
-    path = folder / safe_filename(filename, "scanned_document")
-    path.write_bytes(pdf_bytes)
-    return folder, path
-
-
 # ============================================================
 # SESSION STATE
 # ============================================================
 
 defaults = {
     "mcert_pdf": None,
-    "certificate_data": None,
-    "mcert_filename": "test_certificate.pdf",
+    "mcert_word": None,
+    "mcert_data": None,
     "mcert_copies": 1,
-    "printer_connected": True,
-    "available_scanners": [],
     "scan_pages": [],
     "scan_pdf": None,
+    "printer_connected": True,
+    "available_scanners": [],
 }
 
 for key, value in defaults.items():
@@ -537,15 +550,16 @@ for key, value in defaults.items():
 
 
 # ============================================================
-# MAIN NAVIGATION
+# MAIN MENU
 # ============================================================
 
 menu = st.radio(
     "MENU",
     ["PRINT", "SCANNER"],
     horizontal=True,
-    key="main_menu"
+    key="main_menu",
 )
+
 st.divider()
 
 
@@ -555,6 +569,7 @@ st.divider()
 
 if menu == "PRINT":
     st.header("🖨️ PRINT")
+    st.caption("Generate a certificate, save PDF + Word, or print via Linux CUPS.")
 
     left, right = st.columns(2)
 
@@ -562,22 +577,19 @@ if menu == "PRINT":
         date_text = st.text_input(
             "Date (DD-MMM-YY)",
             value=datetime.now().strftime("%d-%b-%y"),
-            key="date_input"
         )
-        item_name = st.text_input("Item Name", key="item_input")
-
-        show_model = st.checkbox("Model No.", key="show_model")
-        show_serial = st.checkbox("Serial No.", key="show_serial")
-        show_make = st.checkbox("Make", key="show_make")
+        item_name = st.text_input("Item Name")
+        show_model = st.checkbox("Model No.")
+        show_serial = st.checkbox("Serial No.")
+        show_make = st.checkbox("Make")
 
     with right:
         model_no = st.text_input("Model No. Value") if show_model else ""
         serial_no = st.text_input("Serial No. Value") if show_serial else ""
         make = st.text_input("Make Value") if show_make else ""
-        sold_to = st.text_input("Sold To / Company Name", key="sold_to")
+        sold_to = st.text_input("Sold To / Company Name")
 
     selected_columns = []
-
     if show_model:
         selected_columns.append(("model_no", "Model No."))
     if show_serial:
@@ -586,21 +598,23 @@ if menu == "PRINT":
         selected_columns.append(("make", "Make"))
 
     copies = st.number_input(
-        "Number of print copies",
+        "Number of Print Copies",
         min_value=1,
         max_value=20,
-        value=1
+        value=1,
+        step=1,
     )
 
-    if st.button("📄 GENERATE CERTIFICATE", type="primary",
-                 use_container_width=True):
-        parsed_date = parse_date(date_text)
+    if st.button("📄 GENERATE CERTIFICATE", type="primary", use_container_width=True):
+        try:
+            parsed_date = datetime.strptime(date_text.strip(), "%d-%b-%y").date()
+        except ValueError:
+            parsed_date = None
 
         required = {
             "Item Name": item_name,
             "Sold To": sold_to,
         }
-
         if show_model:
             required["Model No."] = model_no
         if show_serial:
@@ -608,10 +622,10 @@ if menu == "PRINT":
         if show_make:
             required["Make"] = make
 
-        missing = [k for k, v in required.items() if not str(v).strip()]
+        missing = [name for name, value in required.items() if not value.strip()]
 
-        if not parsed_date:
-            st.error("Invalid date. Use DD-MMM-YY, e.g. 11-Oct-26.")
+        if parsed_date is None:
+            st.error("Date must be DD-MMM-YY, for example 26-Oct-26.")
         elif missing:
             st.error("Please fill in: " + ", ".join(missing))
         else:
@@ -626,222 +640,253 @@ if menu == "PRINT":
             }
 
             try:
-                st.session_state["mcert_pdf"] = make_certificate_pdf(data)
-                st.session_state["certificate_data"] = data
+                pdf_bytes = make_certificate_pdf(data)
+                word_bytes = certificate_word_bytes(data)
+
+                st.session_state["mcert_pdf"] = pdf_bytes
+                st.session_state["mcert_word"] = word_bytes
+                st.session_state["mcert_data"] = data
                 st.session_state["mcert_copies"] = int(copies)
-                st.session_state["mcert_filename"] = safe_filename(
-                    item_name, "test_certificate"
-                )
-                st.success("Certificate generated.")
+
+                st.success("Certificate generated successfully.")
+
             except Exception as exc:
                 st.error(f"Certificate generation failed: {exc}")
 
-    pdf_bytes = st.session_state.get("mcert_pdf")
-    data = st.session_state.get("certificate_data")
-
-    if pdf_bytes and data:
+    if st.session_state.get("mcert_pdf") and st.session_state.get("mcert_data"):
         st.divider()
-        st.subheader("💾 SAVE CERTIFICATE")
+        st.subheader("💾 SAVE / DOWNLOAD CERTIFICATE")
 
-        filename = st.text_input(
-            "File name",
-            value=st.session_state["mcert_filename"],
-            key="save_filename"
-        )
+        data = st.session_state["mcert_data"]
+        filename_base = st.text_input("File Name", value="test_certificate")
+        filename_base = safe_folder_name(filename_base, "test_certificate")
+        filename_base = os.path.splitext(filename_base)[0]
+
+        pdf_bytes = st.session_state["mcert_pdf"]
+        word_bytes = st.session_state["mcert_word"]
+
+        if st.button("💾 SAVE PDF + WORD ON SERVER", use_container_width=True):
+            try:
+                folder, pdf_path, docx_path, _ = save_certificate_files(
+                    data, pdf_bytes, filename_base
+                )
+                st.success("Saved on Linux server.")
+                st.code(str(folder))
+            except Exception as exc:
+                st.error(f"Save failed: {exc}")
 
         st.download_button(
             "⬇️ DOWNLOAD PDF",
             data=pdf_bytes,
-            file_name=safe_filename(filename, "test_certificate"),
+            file_name=filename_base + ".pdf",
             mime="application/pdf",
-            use_container_width=True
+            use_container_width=True,
         )
 
-        if st.button("💾 SAVE PDF + WORD", use_container_width=True):
-            try:
-                folder, pdf_path, word_path = save_certificate_files(
-                    data, pdf_bytes, filename
-                )
-                st.success("PDF and Word files saved.")
-                st.code(str(folder))
-                st.write("PDF:", str(pdf_path))
-                st.write("Word:", str(word_path))
-            except Exception as exc:
-                st.error(f"Save failed: {exc}")
+        st.download_button(
+            "⬇️ DOWNLOAD WORD",
+            data=word_bytes,
+            file_name=filename_base + ".docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            use_container_width=True,
+        )
+
+        company_folder = safe_folder_name(data["sold_to"])
+        date_folder = data["date"].strftime("%d-%b-%y")
+
+        zip_bytes = create_download_zip(
+            [
+                (filename_base + ".pdf", pdf_bytes),
+                (filename_base + ".docx", word_bytes),
+            ],
+            date_folder,
+            company_folder,
+        )
+
+        st.download_button(
+            "📦 DOWNLOAD COMPANY + DATE FOLDER (ZIP)",
+            data=zip_bytes,
+            file_name=f"M-CERTIFICATE_{date_folder}_{company_folder}.zip",
+            mime="application/zip",
+            type="primary",
+            use_container_width=True,
+        )
 
         st.divider()
-        st.subheader("🖨️ PRINT CERTIFICATE")
+        st.subheader("🖨️ Linux CUPS Printer")
 
-        if not st.session_state["printer_connected"]:
-            st.warning("Printer is disconnected from this application's print workflow.")
-        else:
-            printers = get_printers()
-            default = get_default_printer()
+        if st.session_state["printer_connected"]:
+            printers, error = get_linux_printers()
 
-            if printers:
-                index = printers.index(default) if default in printers else 0
-                printer = st.selectbox("Select printer", printers, index=index)
+            if error:
+                st.warning(error)
+            elif not printers:
+                st.warning("No printer is visible to this Linux server.")
+            else:
+                selected_printer = st.selectbox("Select server printer", printers)
 
-                if st.button("🖨️ PRINT NOW", type="primary",
-                             use_container_width=True):
+                if st.button("🖨️ PRINT CERTIFICATE NOW", use_container_width=True):
                     try:
-                        message = print_pdf(
-                            pdf_bytes, printer,
-                            st.session_state["mcert_copies"]
+                        message = print_pdf_linux(
+                            pdf_bytes,
+                            selected_printer,
+                            st.session_state["mcert_copies"],
                         )
-                        st.success("Print job submitted to CUPS.")
-                        if message:
-                            st.code(message)
+                        st.success(message)
                     except Exception as exc:
                         st.error(f"Printing failed: {exc}")
-            else:
-                st.warning("No CUPS printer found. Check `lpstat -p`.")
-
-
-# ============================================================
-# SCANNER PAGE
-# ============================================================
+        else:
+            st.warning("Printer workflow is disconnected in this app.")
 
 else:
+    # ========================================================
+    # SCANNER PAGE
+    # ========================================================
+
     st.header("📷 SCANNER")
+    st.caption("Linux SANE scanner • Multi-page PDF")
 
     st.subheader("Printer Connection")
 
     if st.session_state["printer_connected"]:
         st.success("Printer workflow: ON")
-        if st.button("🔌 DISCONNECT PRINTER"):
+
+        if st.button("🔌 DISCONNECT PRINTER", use_container_width=True):
             st.session_state["printer_connected"] = False
             st.rerun()
     else:
         st.warning("Printer workflow: OFF")
-        if st.button("🔌 RECONNECT PRINTER"):
+
+        if st.button("🔌 RECONNECT PRINTER", use_container_width=True):
             st.session_state["printer_connected"] = True
             st.rerun()
 
-    st.caption(
-        "This switch enables/disables printing inside this app. "
-        "It does not physically disconnect the USB/network printer."
-    )
-
     st.divider()
-    st.subheader("Find Scanner")
 
     if st.button("🔄 FIND SCANNERS", use_container_width=True):
-        try:
-            st.session_state["available_scanners"] = find_scanners()
-            if st.session_state["available_scanners"]:
-                st.success(
-                    f"{len(st.session_state['available_scanners'])} scanner(s) found."
-                )
-            else:
-                st.warning("No scanner found. Check `scanimage -L`.")
-        except Exception as exc:
-            st.error(f"Scanner detection failed: {exc}")
+        scanners, error = get_linux_scanners()
+        st.session_state["available_scanners"] = scanners
+        st.session_state["scanner_error"] = error
 
     scanners = st.session_state["available_scanners"]
 
+    if st.session_state.get("scanner_error"):
+        st.warning(st.session_state["scanner_error"])
+
     if scanners:
-        scanner_labels = [
-            f"{item['name']} — {item['device']}"
-            for item in scanners
-        ]
-        selected_label = st.selectbox("Select scanner", scanner_labels)
-        selected_index = scanner_labels.index(selected_label)
-        selected_device = scanners[selected_index]["device"]
-
-        resolution = st.selectbox(
-            "Resolution (DPI)", [100, 150, 200, 300, 600], index=2
+        selected = st.selectbox(
+            "Select Scanner",
+            scanners,
+            format_func=lambda x: x["name"],
         )
-        scan_mode = st.selectbox("Scan mode", ["Color", "Gray", "Lineart"])
 
-        col1, col2 = st.columns(2)
+        count = len(st.session_state["scan_pages"])
+        st.info(f"{count} page(s) scanned.")
 
-        with col1:
-            if st.button("📷 START SCAN / NEW DOCUMENT",
-                         type="primary", use_container_width=True):
+        button_label = "📷 START SCAN" if count == 0 else "➕ SCAN NEXT PAGE"
+
+        if st.button(button_label, type="primary", use_container_width=True):
+            with st.spinner("Scanning page from the Linux server..."):
                 try:
-                    with st.spinner("Scanning page..."):
-                        page = scan_one_page(
-                            selected_device, resolution, scan_mode
-                        )
-                    st.session_state["scan_pages"] = [page]
-                    st.session_state["scan_pdf"] = make_scanned_pdf(
-                        st.session_state["scan_pages"]
-                    )
-                    st.success("First page scanned.")
-                except Exception as exc:
-                    st.error(f"Scan failed: {exc}")
-
-        with col2:
-            if st.button("➕ SCAN NEXT PAGE", use_container_width=True):
-                try:
-                    with st.spinner("Scanning next page..."):
-                        page = scan_one_page(
-                            selected_device, resolution, scan_mode
-                        )
+                    page = scan_one_page_sane(selected["device"])
                     st.session_state["scan_pages"].append(page)
                     st.session_state["scan_pdf"] = make_scanned_pdf(
                         st.session_state["scan_pages"]
                     )
-                    st.success(
-                        f"Page {len(st.session_state['scan_pages'])} added."
-                    )
+                    st.rerun()
                 except Exception as exc:
                     st.error(f"Scan failed: {exc}")
 
-        if st.button("🗑️ CLEAR SCANNED PAGES"):
+    else:
+        st.info("Click FIND SCANNERS to check scanners connected to the Linux server.")
+
+    st.divider()
+    st.subheader("📤 Upload scanned images (optional)")
+
+    uploaded_images = st.file_uploader(
+        "Upload scanned JPG / PNG pages to combine into one PDF",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=True,
+    )
+
+    if uploaded_images and st.button("ADD UPLOADED PAGES", use_container_width=True):
+        for uploaded in uploaded_images:
+            try:
+                image_bytes = uploaded.getvalue()
+                with Image.open(io.BytesIO(image_bytes)) as im:
+                    im.verify()
+                st.session_state["scan_pages"].append(image_bytes)
+            except Exception:
+                st.warning(f"Could not read image: {uploaded.name}")
+
+        st.session_state["scan_pdf"] = make_scanned_pdf(
+            st.session_state["scan_pages"]
+        )
+        st.rerun()
+
+    pages = st.session_state["scan_pages"]
+
+    if pages:
+        st.success(f"{len(pages)} page(s) ready.")
+
+        for i, page in enumerate(pages):
+            try:
+                st.image(page, caption=f"Page {i + 1}", use_container_width=True)
+            except Exception:
+                st.caption(f"Page {i + 1}")
+
+        if st.button("🗑️ CLEAR ALL SCANS", use_container_width=True):
             st.session_state["scan_pages"] = []
             st.session_state["scan_pdf"] = None
             st.rerun()
 
-    else:
-        st.info("Click FIND SCANNERS first.")
-
-    pages = st.session_state.get("scan_pages", [])
-    scanned_pdf = st.session_state.get("scan_pdf")
-
-    if pages and scanned_pdf:
-        st.divider()
-        st.subheader(f"📑 Combined PDF — {len(pages)} page(s)")
-
-        for i, page_bytes in enumerate(pages):
-            st.markdown(f"**Page {i + 1}**")
-            st.image(page_bytes, use_container_width=True)
-
-        scan_name = st.text_input(
-            "Scanned PDF file name",
-            value="scanned_document.pdf",
-            key="scan_filename"
-        )
-        scan_customer = st.text_input(
-            "Sold To / Customer Folder",
-            key="scan_sold_to"
+        scan_company = st.text_input("Sold To / Company Name", key="scan_company")
+        scan_filename = safe_filename(
+            st.text_input("PDF File Name", value="scanned_document.pdf"),
+            "scanned_document.pdf",
         )
 
-        st.download_button(
-            "⬇️ DOWNLOAD SCANNED PDF",
-            data=scanned_pdf,
-            file_name=safe_filename(scan_name, "scanned_document"),
-            mime="application/pdf",
-            use_container_width=True
-        )
+        scan_pdf = st.session_state["scan_pdf"]
 
-        if st.button("💾 SAVE SCANNED PDF", type="primary",
-                     use_container_width=True):
-            try:
-                folder, path = save_scanned_pdf(
-                    scanned_pdf, scan_customer, scan_name
+        if scan_pdf:
+            st.download_button(
+                "⬇️ DOWNLOAD SCANNED PDF",
+                data=scan_pdf,
+                file_name=scan_filename,
+                mime="application/pdf",
+                type="primary",
+                use_container_width=True,
+            )
+
+            if scan_company.strip():
+                scan_date_folder = datetime.now().strftime("%d-%b-%y")
+                company_folder = safe_folder_name(scan_company)
+
+                scan_zip = create_download_zip(
+                    [(scan_filename, scan_pdf)],
+                    scan_date_folder,
+                    company_folder,
                 )
-                st.success("Scanned PDF saved.")
-                st.code(str(folder))
-                st.write(str(path))
-            except Exception as exc:
-                st.error(f"Could not save scanned PDF: {exc}")
 
+                st.download_button(
+                    "📦 DOWNLOAD DATE + COMPANY FOLDER (ZIP)",
+                    data=scan_zip,
+                    file_name=f"M-CERTIFICATE_{scan_date_folder}_{company_folder}.zip",
+                    mime="application/zip",
+                    use_container_width=True,
+                )
 
-# ============================================================
-# FOOTER
-# ============================================================
+                if st.button("💾 SAVE SCANNED PDF ON SERVER", use_container_width=True):
+                    try:
+                        folder = get_certificate_folder(
+                            datetime.now().date(),
+                            scan_company,
+                        )
+                        saved_path = save_bytes(folder / scan_filename, scan_pdf)
+                        st.success("Scanned PDF saved on Linux server.")
+                        st.code(str(saved_path))
+                    except Exception as exc:
+                        st.error(f"Save failed: {exc}")
 
 st.divider()
-st.caption("M-CERTIFICATE • PRINT | SCANNER • Linux CUPS + SANE")
+st.caption("M-CERTIFICATE • PRINT | SCANNER • Linux CUPS/SANE")
