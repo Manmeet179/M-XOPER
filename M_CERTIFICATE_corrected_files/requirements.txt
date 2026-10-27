@@ -8,3 +8,4 @@ PyMuPDF
 Pillow
 reportlab
 python-docx
+psycopg2-binary
