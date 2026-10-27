@@ -23,8 +23,8 @@ from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
 # ============================================================
 
 st.set_page_config(
-    page_title="M-CERTIFICATE | Smart Certificate Studio",
-    page_icon="📄",
+    page_title="M-CERTIFICATE",
+    page_icon="〽️",
     layout="wide",
 )
 
