@@ -115,7 +115,6 @@ div[data-testid="stFileUploader"] {
     border-radius: 12px;
 }
 
-/* Font white throughout the app */
 .stApp, .stApp p, .stApp span, .stApp label,
 .stApp h1, .stApp h2, .stApp h3, .stApp h4,
 .stApp h5, .stApp h6,
@@ -125,7 +124,6 @@ div[data-testid="stFileUploader"] {
     color: #FFFFFF !important;
 }
 
-/* Input text */
 .stApp input,
 .stApp textarea,
 .stApp [data-baseweb="select"] {
@@ -189,8 +187,6 @@ def parse_date(value):
     return date.today()
 
 
-# CHANGE: Include Serial No. in filename so records with the same
-# Item Name and Model No. but different Serial Nos. remain distinct.
 def item_filename(item):
     item_name = safe_stem(
         valid_value(item.get("item")) or "TEMP"
@@ -384,7 +380,6 @@ def read_excel(uploaded_file):
     previous_item = None
 
     for row in range(header_row + 1, ws.max_row + 1):
-        # CHANGE: Read merged cells for Item, Make and Model.
         name = valid_value(
             merged_cell_value(ws, row, name_col)
         )
@@ -412,6 +407,13 @@ def read_excel(uploaded_file):
             valid_value(ws.cell(row, win_col).value)
             if win_col else ""
         )
+
+        # CHANGE ONLY:
+        # Remove "(" and ")" from Model No., Serial No. and MAC ID.
+        # No other characters are removed.
+        model = model.replace("(", "").replace(")", "")
+        serial = serial.replace("(", "").replace(")", "")
+        mac = mac.replace("(", "").replace(")", "")
 
         qty_raw = ws.cell(row, qty_col).value if qty_col else 1
 
@@ -452,16 +454,14 @@ def read_excel(uploaded_file):
         if not any([name, make, model, serial, mac, win_key]):
             continue
 
-        # CHANGE: If Item Name is blank but this row has a distinct
-        # serial/MAC/license value, carry forward the previous item's
-        # identifying fields and keep this as a separate record.
+        # Carry forward the previous item's identifying fields
+        # when a row has a separate serial/MAC/license value.
         if not name:
             if previous_item and any([serial, mac, win_key]):
                 name = previous_item.get("item", "")
                 make = make or previous_item.get("make", "")
                 model = model or previous_item.get("model_no", "")
             else:
-                # Preserve the original license-key continuation behavior.
                 if previous_item and win_key:
                     previous_item["win_key"] = win_key
                 continue
@@ -509,7 +509,6 @@ def read_excel(uploaded_file):
 
 # ============================================================
 # DYNAMIC TABLE COLUMNS
-# Only non-empty data fields appear.
 # ============================================================
 
 def table_fields(item, settings):
@@ -561,7 +560,6 @@ def table_fields(item, settings):
 def draw_certificate_page(pdf, item, company, cert_date, settings):
     page_w, page_h = A4
 
-    # Optional letterhead template.
     if settings.get("paper_type") == "Letterhead":
         template_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
@@ -742,14 +740,12 @@ def draw_certificate_page(pdf, item, company, cert_date, settings):
     pdf.setLineWidth(0.6)
 
     pdf.line(left, table_top, right, table_top)
-
     pdf.line(
         left,
         table_top - header_h,
         right,
         table_top - header_h,
     )
-
     pdf.line(left, table_bottom, right, table_bottom)
 
     for x in xs:
@@ -859,7 +855,6 @@ def create_pdf(data, settings):
 
 # ============================================================
 # WORD GENERATION
-# Editable Word table; values follow same dynamic field rules.
 # ============================================================
 
 def create_word(data, settings):
@@ -1046,8 +1041,6 @@ def make_entries(parsed, settings):
 
             stem = item_filename(item)
 
-            # Keep every certificate unique even if Serial No. is
-            # missing or repeated in the source Excel.
             counts[stem] = counts.get(stem, 0) + 1
 
             if counts[stem] > 1:
@@ -1317,7 +1310,7 @@ def show_downloads(generated, key_prefix):
 
 
 # ============================================================
-# NAVIGATION — CLICKABLE PAGES
+# NAVIGATION
 # ============================================================
 
 nav_cols = st.columns(4)
@@ -1376,11 +1369,11 @@ if st.session_state.page == "M-SMART PDF":
 
             all_items = []
 
-            for parsed in parsed_files:
-                for original in parsed["items"]:
+            for parsed_file in parsed_files:
+                for original in parsed_file["items"]:
                     item = dict(original)
-                    item["_company"] = parsed["company"]
-                    item["_date"] = parsed["date"]
+                    item["_company"] = parsed_file["company"]
+                    item["_date"] = parsed_file["date"]
                     all_items.append(item)
 
             company = parsed_files[0]["company"]
@@ -1392,8 +1385,6 @@ if st.session_state.page == "M-SMART PDF":
                 "items": all_items,
             }
 
-            # Count certificates using the same Qty expansion logic
-            # that is used by make_entries().
             total_certificates = sum(
                 max(1, int(item.get("qty", 1)))
                 for item in all_items
@@ -1591,9 +1582,9 @@ elif st.session_state.page == "M-CERTIFICATE":
             item = {
                 "item": item_name.strip(),
                 "make": valid_value(make),
-                "model_no": valid_value(model),
-                "serial_no": valid_value(serial),
-                "mac": valid_value(mac),
+                "model_no": valid_value(model).replace("(", "").replace(")", ""),
+                "serial_no": valid_value(serial).replace("(", "").replace(")", ""),
+                "mac": valid_value(mac).replace("(", "").replace(")", ""),
                 "win_key": valid_value(win_key),
                 "qty": 1,
                 "_company": company,
@@ -1788,7 +1779,6 @@ elif st.session_state.page == "PAGE SETTINGS":
             "show_win": show_win,
         })
 
-        # Clear generated files so the next generation uses new settings.
         st.session_state.smart_generated = None
         st.session_state.manual_generated = None
 
