@@ -91,10 +91,6 @@ st.markdown(
 
 
 # ============================================================
-# LOGIN — NORMAL USER AND ADMIN
-# Normal: ID 1 / password @1
-# Admin:  ID @ / password 1@
-# Configure credentials in Streamlit Secrets.
 # ============================================================
 
 if not st.session_state.authenticated:
