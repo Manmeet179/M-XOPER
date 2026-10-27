@@ -173,11 +173,8 @@ if not st.session_state.authenticated:
     </style>
     """, unsafe_allow_html=True)
 
-    st.markdown(
-        '<div class="login-title">M-CERTIFICATE</div>'
-        '<div class="login-subtitle">SECURE LOGIN</div>',
-        unsafe_allow_html=True,
-    )
+
+
 
     left, center, right = st.columns([1, 1.2, 1])
 
@@ -1885,7 +1882,7 @@ st.divider()
 
 st.markdown(
     '<div style="text-align:center;color:#728096;font-size:12px">'
-    'M-CERTIFICATE · SMART CERTIFICATE STUDIO'
+    'M-CERTIFICATE · SMART CERTIFICATE STUDIO MADE BY~ MEET MEVADA'
     '</div>',
     unsafe_allow_html=True,
 )
