@@ -143,7 +143,7 @@ if not st.session_state.authenticated:
     left, center, right = st.columns([1, 1.2, 1])
 
     with center:
-        st.subheader("Login to continue")
+        st.subheader("Login to Continue")
 
         with st.form("secure_login_form"):
             username = st.text_input(
@@ -188,8 +188,8 @@ if not st.session_state.authenticated:
 
             except Exception:
                 st.error(
-                    "Secrets configuration missing. "
-                    "Check Streamlit Secrets settings."
+                    "Secrets configuration is missing. "
+                    "Check your Streamlit Secrets settings."
                 )
 
     st.markdown("""
@@ -248,7 +248,7 @@ def get_bg_logo():
 
 def save_bg_logo(uploaded_file):
     if not st.session_state.get("is_admin", False):
-        raise PermissionError("Admin login required.")
+        raise PermissionError("Administrator login is required.")
 
     filename = uploaded_file.name.lower()
 
@@ -258,14 +258,14 @@ def save_bg_logo(uploaded_file):
     image_bytes = uploaded_file.getvalue()
 
     if not image_bytes:
-        raise ValueError("Uploaded image is empty.")
+        raise ValueError("The uploaded image is empty.")
 
     try:
         with Image.open(io.BytesIO(image_bytes)) as im:
             im.verify()
     except Exception as exc:
         raise ValueError(
-            "Uploaded file is not a valid image."
+            "The uploaded file is not a valid image."
         ) from exc
 
     mime_type = (
@@ -448,12 +448,12 @@ def strip_brackets(value):
 
 
 # ============================================================
-# MAC ID EXTRACTION — IMPORTANT FIX
+# MAC ID EXTRACTION
 # ============================================================
 
 def extract_mac(value):
     """
-    Extract MAC ID from:
+    Extract MAC IDs from:
       MAC: 00-21-49-09-74-D7
       MAC ID: 00-21-49-09-74-D7
       00-21-49-09-74-D7
@@ -496,7 +496,7 @@ def extract_mac(value):
 
 def extract_serial_and_mac(serial_value, mac_value):
     """
-    Extract serial and MAC independently.
+    Extract the serial number and MAC address independently.
 
     Input:
         FBE26060499 (MAC: 00-21-49-09-74-D7)
@@ -508,7 +508,7 @@ def extract_serial_and_mac(serial_value, mac_value):
     serial = clean(serial_value)
     mac = extract_mac(mac_value)
 
-    # Find a labelled MAC address inside SN/Serial.
+    # Find a labelled MAC address inside the Serial Number field.
     match = re.search(
         r"\bMAC(?:\s*ID)?\s*[:=]\s*"
         r"((?:[0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}"
@@ -518,14 +518,14 @@ def extract_serial_and_mac(serial_value, mac_value):
     )
 
     if match:
-        # Do not overwrite a MAC already found in the MAC column.
+        # Do not overwrite a MAC address already found in the MAC column.
         if not mac:
             mac = match.group(1)
 
         # Remove only the MAC label and address from the serial text.
         serial = serial[:match.start()] + serial[match.end():]
 
-    # Remove remaining bracketed content from the serial.
+    # Remove remaining bracketed content from the serial number.
     serial = strip_brackets(serial)
 
     return serial, mac
@@ -590,8 +590,8 @@ def read_excel(uploaded_file):
 
     if header_row is None:
         raise ValueError(
-            "Excel headings find nathi thata. "
-            "Name/Item sathe Model/MN athva Serial/SN heading rakho."
+            "Excel headings could not be found. "
+            "Add a Name/Item heading along with Model/MN or Serial/SN."
         )
 
     headers = {}
@@ -639,7 +639,7 @@ def read_excel(uploaded_file):
     qty_col = find_col("qty", "quantity")
 
     if not name_col:
-        raise ValueError("Excel ma Name/Item column jaruri chhe.")
+        raise ValueError("The Name/Item column is required in Excel.")
 
     items = []
     previous_item = None
@@ -673,13 +673,12 @@ def read_excel(uploaded_file):
             if win_col else ""
         )
 
-        # IMPORTANT:
-        # Extract MAC before removing bracketed content.
-        # This supports MAC IDs inside SN/Serial as well as
-        # MAC IDs stored in their own Excel column.
+        # Extract the MAC address before removing bracketed content.
+        # This supports MAC addresses in the Serial Number field and
+        # MAC addresses stored in a separate Excel column.
         serial, mac = extract_serial_and_mac(serial, mac)
 
-        # Clean the model separately.
+        # Clean the model number separately.
         model = strip_brackets(model)
 
         qty_raw = ws.cell(row, qty_col).value if qty_col else 1
@@ -727,7 +726,7 @@ def read_excel(uploaded_file):
         previous_item = item
 
     if not items:
-        raise ValueError("Excel ma koi item row mali nathi.")
+        raise ValueError("No item rows were found in the Excel file.")
 
     company = company or "Customer"
     company = re.sub(
@@ -798,8 +797,8 @@ def draw_certificate_page(pdf, item, company, cert_date, settings):
 
         except Exception as exc:
             raise RuntimeError(
-                "Aiven background image load failed. "
-                "Check Streamlit Secrets and database connection."
+                "Failed to load the Aiven background image. "
+                "Check Streamlit Secrets and the database connection."
             ) from exc
 
     pdf.saveState()
@@ -1290,12 +1289,12 @@ def build_bundle(entries, company, cert_date, settings):
 def show_downloads(generated, key_prefix):
     if not generated:
         st.info(
-            "Pehla M-SMART PDF athva M-CERTIFICATE page par "
-            "certificate generate karo."
+            "First, generate a certificate on the M-SMART PDF "
+            "or M-CERTIFICATE page."
         )
         return
 
-    st.subheader("Combined downloads")
+    st.subheader("Combined Downloads")
 
     c1, c2, c3 = st.columns(3)
 
@@ -1330,7 +1329,7 @@ def show_downloads(generated, key_prefix):
         )
 
     st.divider()
-    st.subheader("Individual PDF and Word files")
+    st.subheader("Individual PDF and Word Files")
 
     for index, entry in enumerate(generated["entries"]):
         with st.container(border=True):
@@ -1363,7 +1362,7 @@ def show_downloads(generated, key_prefix):
                 )
 
     st.divider()
-    st.subheader("Download only selected certificates")
+    st.subheader("Download Selected Certificates")
 
     labels = [
         f"{index + 1}. {entry['label']}"
@@ -1371,7 +1370,7 @@ def show_downloads(generated, key_prefix):
     ]
 
     selected = st.multiselect(
-        "Select only the certificates you need",
+        "Select the certificates you want to download",
         options=labels,
         key=f"{key_prefix}_selected",
     )
@@ -1413,7 +1412,7 @@ def show_downloads(generated, key_prefix):
 
         with c1:
             st.download_button(
-                "Download selected — PDF",
+                "Download Selected — PDF",
                 selected_pdf,
                 selected_stem + ".pdf",
                 "application/pdf",
@@ -1423,7 +1422,7 @@ def show_downloads(generated, key_prefix):
 
         with c2:
             st.download_button(
-                "Download selected — Word",
+                "Download Selected — Word",
                 selected_word,
                 selected_stem + ".docx",
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -1446,7 +1445,7 @@ def show_downloads(generated, key_prefix):
                     )
 
             st.download_button(
-                "Download selected — ZIP",
+                "Download Selected — ZIP",
                 selected_zip.getvalue(),
                 selected_stem + ".zip",
                 "application/zip",
@@ -1501,12 +1500,12 @@ if st.session_state.page == "M-SMART PDF":
     st.header("M-SMART PDF")
 
     st.write(
-        "Excel upload karo. Darek item mate alag PDF "
-        "ane editable Word file generate thase."
+        "Upload Excel files. A separate PDF and editable Word "
+        "document will be generated for each item."
     )
 
     uploads = st.file_uploader(
-        "Upload Excel files (.xlsx)",
+        "Upload Excel Files (.xlsx)",
         type=["xlsx"],
         accept_multiple_files=True,
         key="excel_upload",
@@ -1543,12 +1542,12 @@ if st.session_state.page == "M-SMART PDF":
             )
 
             st.success(
-                f"{len(uploads)} Excel file(s) read. "
+                f"{len(uploads)} Excel file(s) read successfully. "
                 f"Total item rows: {len(all_items)}. "
                 f"Certificates to generate: {total_certificates}."
             )
 
-            st.subheader("Excel data preview")
+            st.subheader("Excel Data Preview")
 
             st.dataframe(
                 [{
@@ -1576,7 +1575,7 @@ if st.session_state.page == "M-SMART PDF":
                 )
 
                 st.success(
-                    f"{len(entries)} individual certificates generated."
+                    f"{len(entries)} individual certificates generated successfully."
                 )
 
                 saved = st.session_state.smart_generated["saved_folder"]
@@ -1587,17 +1586,17 @@ if st.session_state.page == "M-SMART PDF":
                 st.rerun()
 
         except Exception as exc:
-            st.error(f"Excel error: {exc}")
+            st.error(f"Excel processing error: {exc}")
 
     generated = st.session_state.smart_generated
 
     if generated:
         st.divider()
-        st.subheader("Generated certificate preview")
+        st.subheader("Generated Certificate Preview")
 
         st.caption(
-            "PDF preview niche dekho. Downloads mate "
-            "DOWNLOAD PDF WORD page kholo."
+            "Review the PDF preview below. "
+            "To download files, open the DOWNLOAD PDF WORD page."
         )
 
         try:
@@ -1608,7 +1607,7 @@ if st.session_state.page == "M-SMART PDF":
 
             for index, page in enumerate(pdf_doc):
                 with st.expander(
-                    f"Certificate preview — Page {index + 1}",
+                    f"Certificate Preview — Page {index + 1}",
                     expanded=(index == 0),
                 ):
                     pix = page.get_pixmap(
@@ -1633,8 +1632,8 @@ if st.session_state.page == "M-SMART PDF":
         st.dataframe(
             [{
                 "Item": entry["item"].get("item", ""),
-                "PDF filename": entry["pdf_name"],
-                "Word filename": entry["docx_name"],
+                "PDF Filename": entry["pdf_name"],
+                "Word Filename": entry["docx_name"],
             } for entry in generated["entries"]],
             use_container_width=True,
             hide_index=True,
@@ -1657,14 +1656,14 @@ elif st.session_state.page == "DOWNLOAD PDF WORD":
 
     if generated and generated["saved_folder"]:
         st.success(
-            "PC par files saved: " + generated["saved_folder"]
+            "Files saved on your PC: " + generated["saved_folder"]
         )
 
     elif generated:
         st.info(
-            "D:/C: local auto-save Windows par Streamlit locally "
-            "run karsho tyare j available chhe. Cloud par download "
-            "buttons vapro."
+            "Local auto-save to D:/C: is available only when Streamlit "
+            "runs locally on Windows. Use the download buttons when "
+            "running in the cloud."
         )
 
 
@@ -1676,8 +1675,8 @@ elif st.session_state.page == "M-CERTIFICATE":
     st.header("M-CERTIFICATE")
 
     st.write(
-        "Excel vagar manually certificate banao. "
-        "Khali fields table ma dekhase nahi."
+        "Create a certificate manually without Excel. "
+        "Empty fields will not appear in the table."
     )
 
     with st.form("manual_certificate_form"):
@@ -1685,8 +1684,8 @@ elif st.session_state.page == "M-CERTIFICATE":
 
         with left:
             item_name = st.text_input(
-                "Item name",
-                placeholder="CAMERA / LENSE",
+                "Item Name",
+                placeholder="CAMERA / LENS",
             )
 
             make = st.text_input("Make")
@@ -1700,7 +1699,7 @@ elif st.session_state.page == "M-CERTIFICATE":
             )
 
             cert_date = st.date_input(
-                "Certificate date",
+                "Certificate Date",
                 value=date.today(),
             )
 
@@ -1708,7 +1707,7 @@ elif st.session_state.page == "M-CERTIFICATE":
             win_key = st.text_input("WIN KEY")
 
         st.caption(
-            "Model No, Serial No, Make, MAC ID ane WIN KEY optional chhe."
+            "Model No, Serial No, Make, MAC ID, and WIN KEY are optional."
         )
 
         submit_manual = st.form_submit_button(
@@ -1719,12 +1718,12 @@ elif st.session_state.page == "M-CERTIFICATE":
 
     if submit_manual:
         if not item_name.strip():
-            st.error("Item name jaruri chhe.")
+            st.error("Item name is required.")
 
         else:
             company = company.strip() or "Customer"
 
-            # Apply the same serial/MAC extraction to manual entries.
+            # Apply the same serial and MAC extraction logic to manual entries.
             serial_clean, mac_clean = extract_serial_and_mac(
                 serial, mac
             )
@@ -1753,13 +1752,13 @@ elif st.session_state.page == "M-CERTIFICATE":
                 entries, company, cert_date, settings
             )
 
-            st.success("Manual certificate generated.")
+            st.success("Manual certificate generated successfully.")
             st.rerun()
 
     if st.session_state.manual_generated:
         generated = st.session_state.manual_generated
 
-        st.subheader("Manual certificate preview")
+        st.subheader("Manual Certificate Preview")
 
         try:
             pdf_doc = fitz.open(
@@ -1799,22 +1798,22 @@ elif st.session_state.page == "PAGE SETTINGS":
     st.header("PAGE SETTINGS")
 
     st.info(
-        "Settings current Streamlit session ma auto-save thase. "
-        "App restart pachi settings permanent rehse teni guarantee nathi."
+        "Settings are saved for the current Streamlit session. "
+        "Permanent storage after an app restart is not guaranteed."
     )
 
     settings = st.session_state.smart_settings
 
     if st.session_state.get("is_admin", False):
-        st.subheader("BG LOGO — Admin Only")
+        st.subheader("BACKGROUND LOGO — ADMIN ONLY")
 
         st.caption(
-            "Letterhead background Aiven PostgreSQL ma "
-            "private rite save thase."
+            "The letterhead background image will be stored privately "
+            "in the Aiven PostgreSQL database."
         )
 
         uploaded_bg = st.file_uploader(
-            "Upload letterhead image (PNG/JPG)",
+            "Upload Letterhead Image (PNG/JPG)",
             type=["png", "jpg", "jpeg"],
             key="admin_bg_logo_upload",
         )
@@ -1823,28 +1822,28 @@ elif st.session_state.page == "PAGE SETTINGS":
             try:
                 st.image(
                     uploaded_bg,
-                    caption="Uploaded background preview",
+                    caption="Uploaded Background Preview",
                     use_container_width=True,
                 )
             except Exception:
                 pass
 
             if st.button(
-                "SAVE BG LOGO TO AIVEN",
+                "SAVE BACKGROUND LOGO TO AIVEN",
                 type="primary",
                 use_container_width=True,
             ):
                 try:
                     save_bg_logo(uploaded_bg)
                     st.success(
-                        "BG LOGO Aiven database ma save thai gayo."
+                        "Background image saved successfully to the Aiven database."
                     )
 
                 except Exception as exc:
                     st.error(f"Image save failed: {exc}")
 
         if st.button(
-            "CHECK SAVED BG LOGO",
+            "CHECK SAVED BACKGROUND LOGO",
             key="check_saved_bg_logo",
         ):
             try:
@@ -1853,12 +1852,12 @@ elif st.session_state.page == "PAGE SETTINGS":
                 if saved_logo:
                     st.image(
                         saved_logo[0],
-                        caption="Current saved database background",
+                        caption="Current Saved Database Background",
                         use_container_width=True,
                     )
                 else:
                     st.warning(
-                        "Haju koi background image upload nathi."
+                        "No background image has been uploaded yet."
                     )
 
             except Exception as exc:
@@ -1871,7 +1870,7 @@ elif st.session_state.page == "PAGE SETTINGS":
 
         with left:
             date_format = st.selectbox(
-                "Date format",
+                "Date Format",
                 list(DATE_FORMATS),
                 index=list(DATE_FORMATS).index(
                     settings["date_format"]
@@ -1879,7 +1878,7 @@ elif st.session_state.page == "PAGE SETTINGS":
             )
 
             paper_type = st.selectbox(
-                "Paper type",
+                "Paper Type",
                 ["Letterhead", "Blank paper"],
                 index=["Letterhead", "Blank paper"].index(
                     settings["paper_type"]
@@ -1887,7 +1886,7 @@ elif st.session_state.page == "PAGE SETTINGS":
             )
 
             top_spacing = st.number_input(
-                "Content top spacing (mm)",
+                "Content Top Spacing (mm)",
                 min_value=0,
                 max_value=60,
                 value=int(settings["top_spacing_mm"]),
@@ -1895,37 +1894,37 @@ elif st.session_state.page == "PAGE SETTINGS":
             )
 
             issuing_company = st.text_input(
-                "Certificate issued by",
+                "Certificate Issued By",
                 value=settings["company"],
             )
 
         with right:
             make_heading = st.text_input(
-                "Make heading",
+                "Make Heading",
                 value=settings["make_heading"],
             )
 
             model_heading = st.text_input(
-                "Model heading",
+                "Model Heading",
                 value=settings["model_heading"],
             )
 
             serial_heading = st.text_input(
-                "Serial heading",
+                "Serial Heading",
                 value=settings["serial_heading"],
             )
 
             mac_heading = st.text_input(
-                "MAC heading",
+                "MAC Heading",
                 value=settings["mac_heading"],
             )
 
             win_heading = st.text_input(
-                "WIN KEY heading",
+                "WIN KEY Heading",
                 value=settings["win_heading"],
             )
 
-        st.subheader("Optional table columns")
+        st.subheader("Optional Table Columns")
 
         a, b, c, d, e = st.columns(5)
 
@@ -2005,7 +2004,7 @@ st.divider()
 st.markdown(
     '<div style="text-align:center;color:#728096;font-size:12px">'
     'M-CERTIFICATE · SMART CERTIFICATE STUDIO '
-    'MADE BY~ MEET MEVADA'
+    'MADE BY ~ MEET MEVADA'
     '</div>',
     unsafe_allow_html=True,
-                )
+        )
