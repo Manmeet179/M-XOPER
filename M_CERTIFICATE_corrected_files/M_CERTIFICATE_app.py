@@ -18,6 +18,8 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.table import WD_TABLE_ALIGNMENT, WD_CELL_VERTICAL_ALIGNMENT
 
 
+
+
 # ============================================================
 # APP CONFIGURATION
 # ============================================================
@@ -141,7 +143,90 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ============================================================
+# LOGIN AUTHENTICATION - STREAMLIT SECRETS
+# ============================================================
 
+if "authenticated" not in st.session_state:
+    st.session_state.authenticated = False
+
+if not st.session_state.authenticated:
+    st.markdown("""
+    <style>
+    .stApp {
+        background: #000000;
+        color: #FFFFFF;
+    }
+    .login-title {
+        text-align: center;
+        font-size: 34px;
+        font-weight: 850;
+        letter-spacing: 2px;
+        margin-top: 45px;
+        color: #FFFFFF;
+    }
+    .login-subtitle {
+        text-align: center;
+        color: #AAAAAA;
+        margin-bottom: 25px;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown(
+        '<div class="login-title">M-CERTIFICATE</div>'
+        '<div class="login-subtitle">SECURE LOGIN</div>',
+        unsafe_allow_html=True,
+    )
+
+    left, center, right = st.columns([1, 1.2, 1])
+
+    with center:
+        st.subheader("Login to continue")
+
+        with st.form("secure_login_form"):
+            username = st.text_input(
+                "User ID",
+                placeholder="Enter your ID",
+            )
+
+            password = st.text_input(
+                "Password",
+                type="password",
+                placeholder="Enter your password",
+            )
+
+            login_clicked = st.form_submit_button(
+                "LOGIN",
+                type="primary",
+                use_container_width=True,
+            )
+
+        if login_clicked:
+            try:
+                correct_username = str(
+                    st.secrets["login"]["username"]
+                )
+                correct_password = str(
+                    st.secrets["login"]["password"]
+                )
+
+                if (
+                    username == correct_username
+                    and password == correct_password
+                ):
+                    st.session_state.authenticated = True
+                    st.rerun()
+                else:
+                    st.error("Invalid ID or password.")
+
+            except Exception:
+                st.error(
+                    "Secrets configuration missing. "
+                    "Please check Streamlit Secrets settings."
+                )
+
+    st.stop()
 # ============================================================
 # COMMON HELPERS
 # ============================================================
