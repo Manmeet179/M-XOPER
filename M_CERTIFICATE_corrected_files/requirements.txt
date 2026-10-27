@@ -2,3 +2,9 @@ streamlit
 PyMuPDF
 Pillow
 reportlab
+streamlit
+openpyxl
+PyMuPDF
+Pillow
+reportlab
+python-docx
