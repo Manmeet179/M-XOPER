@@ -30,7 +30,7 @@ DEFAULTS = {
     "mac": "MAC ID",
     "win": "WIN KEY",
     "company": "OptoPixel Pvt. Ltd.",
-    "print_format": "Letterhead",
+    "paper_type": "Letterhead",
     "top_spacing_mm": 10,
 }
 
@@ -113,12 +113,10 @@ def create_pdf(data, settings):
     pdf = canvas.Canvas(buffer, pagesize=A4)
     page_w, page_h = A4
 
-    # Print format selector:
-    # Letterhead = background image with website, logo and footer.
-    # Blank Paper = plain white A4 with certificate content only.
-    print_format = settings.get("print_format", "Letterhead")
-
-    if print_format == "Letterhead":
+    # Optional OptoPixel letterhead background.
+    # In Blank paper mode, do not draw the logo, website, or footer.
+    paper_type = settings.get("paper_type", "Letterhead")
+    if paper_type == "Letterhead":
         template_path = os.path.join(
             os.path.dirname(os.path.abspath(__file__)),
             "optopixel_template.png"
@@ -131,7 +129,7 @@ def create_pdf(data, settings):
                 "M_CERTIFICATE_app.py. Expected path: " + template_path
             )
 
-        # Draw the template first, so certificate text appears on top.
+        # Draw template first, so certificate text appears on top.
         pdf.drawImage(
             template_path,
             0,
@@ -336,25 +334,24 @@ with st.sidebar:
 
     settings = st.session_state.pdf_settings
     with st.form("settings_form"):
-        print_format = st.selectbox(
-            "Print Format",
-            ["Letterhead", "Blank Paper"],
-            index=["Letterhead", "Blank Paper"].index(
-                settings.get("print_format", "Letterhead")
-                if settings.get("print_format", "Letterhead") in ["Letterhead", "Blank Paper"]
-                else "Letterhead"
-            ),
-            help=(
-                "Letterhead prints the OptoPixel logo, website and footer. "
-                "Blank Paper prints only the certificate content on a plain page."
-            )
-        )
-
         date_format = st.selectbox(
             "Date format",
             list(FORMATS.keys()),
             index=list(FORMATS).index(settings["date_format"]),
             format_func=lambda f: f"{f} ({EXAMPLES[f]})"
+        )
+
+        paper_type = st.selectbox(
+            "Print Paper Type",
+            ["Letterhead", "Blank paper"],
+            index=["Letterhead", "Blank paper"].index(
+                settings.get("paper_type", "Letterhead")
+            ),
+            help=(
+                "Letterhead: prints over the OptoPixel logo and footer image. "
+                "Blank paper: prints certificate content only, without logo, "
+                "website, or footer."
+            )
         )
 
         top_spacing_mm = st.number_input(
@@ -379,7 +376,7 @@ with st.sidebar:
         if save_settings:
             st.session_state.pdf_settings = {
                 "date_format": date_format,
-                "print_format": print_format,
+                "paper_type": paper_type,
                 "top_spacing_mm": int(top_spacing_mm),
                 "item": item_heading.strip() or DEFAULTS["item"],
                 "model": model_heading.strip() or DEFAULTS["model"],
@@ -526,7 +523,10 @@ if "certificate_pdf" in st.session_state:
         mime="application/pdf",
         use_container_width=True
     )
-    st.caption("To print, download the PDF and open it in a PDF viewer.")
+    st.caption(
+        "Print mode: " + st.session_state.pdf_settings.get("paper_type", "Letterhead")
+        + ". Download the PDF and open it in a PDF viewer to print."
+    )
 
 
 # =========================
