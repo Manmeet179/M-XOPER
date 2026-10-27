@@ -222,8 +222,28 @@ if not st.session_state.authenticated:
                     "Secrets configuration missing. "
                     "Please check Streamlit Secrets settings."
                 )
+    st.markdown(
+        """
+        <div style="
+            position: fixed;
+            bottom: 15px;
+            left: 0;
+            width: 100%;
+            text-align: center;
+            color: #FFFFFF;
+            font-size: 12px;
+            letter-spacing: 0.5px;
+        ">
+            M-CERTIFICATE · SMART CERTIFICATE STUDIO
+            <br>
+            MADE BY ~ MEET MEVADA
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     st.stop()
+
 # ============================================================
 # COMMON HELPERS
 # ============================================================
