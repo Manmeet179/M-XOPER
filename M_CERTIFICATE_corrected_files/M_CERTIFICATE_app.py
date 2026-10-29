@@ -35,6 +35,8 @@ st.set_page_config(
 
 DEFAULTS = {
     "date_format": "DD-MMM-YY",
+    "to_whom_font_size": 16,
+    "content_font_size": 14,
     "company": "OptoPixel Pvt. Ltd.",
     "paper_type": "Letterhead",
     "top_spacing_mm": 10,
@@ -89,6 +91,7 @@ st.session_state.setdefault("is_admin", False)
 st.session_state.setdefault("excel_upload_signature", None)
 st.session_state.setdefault("windows_queue", [])
 st.session_state.setdefault("windows_decisions", {})
+st.session_state.setdefault("windows_key_confirmations", {})
 
 
 # ============================================================
@@ -271,26 +274,35 @@ def save_bg_logo(uploaded_file):
 
     filename = uploaded_file.name.lower()
 
-    if not filename.endswith((".png", ".jpg", ".jpeg")):
-        raise ValueError("Only PNG and JPG images are supported.")
+    if not filename.endswith((".png", ".jpg", ".jpeg", ".pdf")):
+        raise ValueError("Upload a PNG, JPG, JPEG, or PDF file.")
 
     image_bytes = uploaded_file.getvalue()
-
     if not image_bytes:
-        raise ValueError("The uploaded image is empty.")
+        raise ValueError("The uploaded file is empty.")
 
-    try:
-        with Image.open(io.BytesIO(image_bytes)) as im:
-            im.verify()
-    except Exception as exc:
-        raise ValueError(
-            "The uploaded file is not a valid image."
-        ) from exc
-
-    mime_type = (
-        mimetypes.guess_type(filename)[0]
-        or "application/octet-stream"
-    )
+    # Store a normalized PNG so PDF generation and Word can use the same artwork.
+    if filename.endswith(".pdf"):
+        try:
+            with fitz.open(stream=image_bytes, filetype="pdf") as pdf_doc:
+                if pdf_doc.page_count < 1:
+                    raise ValueError("The PDF has no pages.")
+                pix = pdf_doc[0].get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                image_bytes = pix.tobytes("png")
+        except Exception as exc:
+            raise ValueError("The uploaded PDF could not be read.") from exc
+        mime_type = "image/png"
+    else:
+        try:
+            with Image.open(io.BytesIO(image_bytes)) as im:
+                im.verify()
+            with Image.open(io.BytesIO(image_bytes)) as im:
+                converted = io.BytesIO()
+                im.convert("RGB").save(converted, format="PNG")
+                image_bytes = converted.getvalue()
+            mime_type = "image/png"
+        except Exception as exc:
+            raise ValueError("The uploaded file is not a valid image.") from exc
 
     init_logo_table()
 
@@ -713,6 +725,13 @@ def read_excel(uploaded_file):
                 break
         win_key = win_key or detected_key
 
+        # A 25-character 5x5 product key must never remain in SERIAL NO.
+        # It is moved to the dedicated Windows Key field instead.
+        if detected_key:
+            serial = re.sub(re.escape(detected_key), "", serial, flags=re.I).strip(" -:;,")
+            model = re.sub(re.escape(detected_key), "", model, flags=re.I).strip(" -:;,")
+            make = re.sub(re.escape(detected_key), "", make, flags=re.I).strip(" -:;,")
+
         serial, mac = extract_serial_and_mac(serial, mac)
         model = strip_brackets(model)
 
@@ -877,6 +896,26 @@ DEFAULT_TABLE_ORDER = ["item", "model_no", "serial_no", "operating_system", "win
 
 
 def table_fields(item, settings):
+    # If a Windows key belongs to a normal item and there is no separate OS
+    # value, keep the certificate table compact and in the requested order.
+    if (
+        item.get("_windows_detected")
+        and not item.get("_windows_standalone")
+        and valid_value(item.get("win_key"))
+        and not valid_value(item.get("operating_system"))
+    ):
+        fields = [("ITEM", valid_value(item.get("item")))]
+        for heading, key in (
+            ("MAKE", "make"),
+            ("MODEL NO", "model_no"),
+            ("SERIAL NO", "serial_no"),
+            ("WINDOWS KEY", "win_key"),
+        ):
+            value = valid_value(item.get(key))
+            if value:
+                fields.append((heading, value))
+        return fields
+
     # CASE 1: the normal item (for example IPC) already contains its real
     # MODEL NO + SERIAL NO + OPERATING SYSTEM + WINDOW KEY + MAKE.
     # For this case the certificate must ALWAYS use all five data fields.
@@ -1047,10 +1086,11 @@ def draw_certificate_page(pdf, item, company, cert_date, settings):
     concern = "TO WHOM IT MAY CONCERN"
     concern_y = page_h - 190
 
-    pdf.setFont("Helvetica", 12)
+    concern_size = max(8, min(36, float(settings.get("to_whom_font_size", 16))))
+    pdf.setFont("Helvetica", concern_size)
     pdf.drawCentredString(page_w / 2, concern_y, concern)
 
-    concern_width = stringWidth(concern, "Helvetica", 12)
+    concern_width = stringWidth(concern, "Helvetica", concern_size)
 
     pdf.line(
         page_w / 2 - concern_width / 2,
@@ -1064,15 +1104,16 @@ def draw_certificate_page(pdf, item, company, cert_date, settings):
 
     intro = build_intro(item, settings)
 
+    content_font_size = max(6, min(24, float(settings.get("content_font_size", 14))))
     intro_lines = wrap_text(
-        intro, "Helvetica", 10.5, content_w
+        intro, "Helvetica", content_font_size, content_w
     )
 
     intro_y = page_h - 245
-    pdf.setFont("Helvetica", 10.5)
+    pdf.setFont("Helvetica", content_font_size)
 
     for index, line in enumerate(intro_lines):
-        pdf.drawString(left, intro_y - index * 15, line)
+        pdf.drawString(left, intro_y - index * (content_font_size + 4), line)
 
     count = len(fields)
 
@@ -1106,7 +1147,7 @@ def draw_certificate_page(pdf, item, company, cert_date, settings):
     header_h = max(30, max_header * 11 + 12)
     row_h = max(34, max_value * 11 + 12)
 
-    table_top = intro_y - len(intro_lines) * 15 - 25
+    table_top = intro_y - len(intro_lines) * (content_font_size + 4) - 25
     table_bottom = table_top - header_h - row_h
 
     xs = [left]
@@ -1161,29 +1202,30 @@ def draw_certificate_page(pdf, item, company, cert_date, settings):
         "and is performing satisfactorily and found OK."
     )
 
-    pdf.setFont("Helvetica", 10)
+    body_size = max(6, min(24, float(settings.get("content_font_size", 14))))
+    pdf.setFont("Helvetica", body_size)
 
-    for line in wrap_text(statement, "Helvetica", 10, content_w):
+    for line in wrap_text(statement, "Helvetica", body_size, content_w):
         if y < safe_bottom:
             break
         pdf.drawString(left, y, line)
-        y -= 14
+        y -= body_size + 4
 
     y -= 12
-    pdf.setFont("Helvetica-Oblique", 10)
+    pdf.setFont("Helvetica-Oblique", body_size)
 
     sale_statement = (
         f"The above said item is sold to {company or 'Customer'}."
     )
 
-    for line in wrap_text(sale_statement, "Helvetica-Oblique", 10, content_w):
+    for line in wrap_text(sale_statement, "Helvetica-Oblique", body_size, content_w):
         if y < safe_bottom:
             break
         pdf.drawString(left, y, line)
-        y -= 14
+        y -= body_size + 4
 
     y -= 12
-    pdf.setFont("Helvetica", 10)
+    pdf.setFont("Helvetica", body_size)
 
     if y >= safe_bottom:
         pdf.drawString(
@@ -1234,6 +1276,23 @@ def create_word(data, settings):
     section.left_margin = Inches(0.55)
     section.right_margin = Inches(0.55)
 
+    # Reuse the same saved letterhead artwork as the PDF. It is placed in the
+    # Word header, so the exported DOCX carries the uploaded design/logo too.
+    if settings.get("paper_type") == "Letterhead":
+        try:
+            logo_record = get_bg_logo()
+            if logo_record:
+                section.header_distance = Inches(0)
+                header_p = section.header.paragraphs[0]
+                header_p.paragraph_format.space_after = Pt(0)
+                header_p.paragraph_format.space_before = Pt(0)
+                header_p.add_run().add_picture(io.BytesIO(logo_record[0]), width=Inches(8.27))
+        except Exception:
+            # Keep Word generation available even if the optional logo is absent.
+            pass
+
+    to_whom_size = max(8, min(36, float(settings.get("to_whom_font_size", 16))))
+    content_size = max(6, min(24, float(settings.get("content_font_size", 14))))
     first_page = True
 
     for item in data["items"]:
@@ -1274,11 +1333,13 @@ def create_word(data, settings):
 
             run = p.add_run("TO WHOM IT MAY CONCERN")
             run.bold = True
-            run.font.size = Pt(11)
+            run.font.size = Pt(to_whom_size)
 
             item_name = valid_value(item.get("item")) or "TEMP"
 
-            doc.add_paragraph(build_intro(item, settings))
+            intro_p = doc.add_paragraph(build_intro(item, settings))
+            for intro_run in intro_p.runs:
+                intro_run.font.size = Pt(content_size)
 
             fields = table_fields(item, settings)
 
@@ -1314,20 +1375,19 @@ def create_word(data, settings):
                 ):
                     run.bold = True
 
-            doc.add_paragraph(
+            for paragraph_text in (
                 "Specified component is tested for all its functionalities "
-                "and is performing satisfactorily and found OK."
-            )
+                "and is performing satisfactorily and found OK.",
+                f"The above said item is sold to {company}.",
+                f'For {settings.get("company", DEFAULTS["company"])},',
+            ):
+                paragraph = doc.add_paragraph(paragraph_text)
+                for paragraph_run in paragraph.runs:
+                    paragraph_run.font.size = Pt(content_size)
 
-            doc.add_paragraph(
-                f"The above said item is sold to {company}."
-            )
-
-            doc.add_paragraph(
-                f'For {settings.get("company", DEFAULTS["company"])},'
-            )
-
-            doc.add_paragraph("\nAuthorized")
+            authorized_p = doc.add_paragraph("\nAuthorized")
+            for authorized_run in authorized_p.runs:
+                authorized_run.font.size = Pt(content_size)
 
     output = io.BytesIO()
     doc.save(output)
@@ -1717,6 +1777,7 @@ if st.session_state.page == "M-SMART PDF":
                 st.session_state.excel_upload_signature = upload_signature
                 st.session_state.windows_queue = []
                 st.session_state.windows_decisions = {}
+                st.session_state.windows_key_confirmations = {}
 
             parsed_files = [read_excel(uploaded) for uploaded in uploads]
             all_items = []
@@ -1730,6 +1791,40 @@ if st.session_state.page == "M-SMART PDF":
             company = parsed_files[0]["company"]
             cert_date = parsed_files[0]["date"]
             parsed = {"company": company, "date": cert_date, "items": all_items}
+
+            # Confirm detected 5x5 product keys with the user. This prevents
+            # ordinary serial numbers from being silently treated as Windows keys.
+            confirmations = st.session_state.get("windows_key_confirmations", {})
+            for key_idx, candidate in enumerate(all_items):
+                candidate_key = valid_value(candidate.get("win_key"))
+                if not candidate_key or not WINDOWS_KEY_RE.fullmatch(candidate_key):
+                    continue
+                if key_idx in confirmations:
+                    answer = confirmations[key_idx]
+                    if answer is False:
+                        candidate["serial_no"] = candidate_key
+                        candidate["win_key"] = ""
+                        candidate["_windows_detected"] = False
+                    continue
+
+                if hasattr(st, "dialog"):
+                    @st.dialog("Windows Key Confirmation")
+                    def confirm_windows_key_dialog(idx=key_idx, item=candidate, detected=candidate_key):
+                        st.warning("This value matches the 25-character Windows key format (XXXXX-XXXXX-XXXXX-XXXXX-XXXXX).")
+                        st.write(f"**Item:** {item.get('item', '') or '(continued item row)'}")
+                        st.code(detected)
+                        st.write("Is this a Windows key?")
+                        yes_col, no_col = st.columns(2)
+                        with yes_col:
+                            if st.button("Yes, Windows Key", type="primary", use_container_width=True, key=f"confirm_win_yes_{idx}"):
+                                st.session_state.windows_key_confirmations[idx] = True
+                                st.rerun()
+                        with no_col:
+                            if st.button("No, Serial Number", use_container_width=True, key=f"confirm_win_no_{idx}"):
+                                st.session_state.windows_key_confirmations[idx] = False
+                                st.rerun()
+                    confirm_windows_key_dialog()
+                    st.stop()
 
             # Windows certificates that already contain the complete
             # certificate table data do NOT need a popup.  They are used
@@ -2179,6 +2274,23 @@ elif st.session_state.page == "PAGE SETTINGS":
 
     settings = st.session_state.smart_settings
 
+    st.subheader("FONT SIZE")
+    font_col1, font_col2 = st.columns(2)
+    with font_col1:
+        settings["to_whom_font_size"] = st.number_input(
+            "TO WHOM IT MAY CONCERN font size",
+            min_value=8, max_value=36,
+            value=int(settings.get("to_whom_font_size", 16)), step=1,
+            key="settings_to_whom_font_size",
+        )
+    with font_col2:
+        settings["content_font_size"] = st.number_input(
+            "Whole content font size",
+            min_value=6, max_value=24,
+            value=int(settings.get("content_font_size", 14)), step=1,
+            key="settings_content_font_size",
+        )
+
     st.subheader("A4 PAGE LAYOUT")
     c1, c2, c3 = st.columns(3)
 
@@ -2340,12 +2452,12 @@ elif st.session_state.page == "PAGE SETTINGS":
 
     if st.session_state.get("is_admin", False):
         st.caption(
-            "Upload or replace the private A4 letterhead/background image."
+            "Upload or replace the private A4 letterhead/background design (PNG, JPG, or PDF). PDF uploads use the first page as the letterhead."
         )
 
         uploaded_bg = st.file_uploader(
-            "Upload Letterhead Image (PNG/JPG)",
-            type=["png", "jpg", "jpeg"],
+            "Upload Letterhead / Logo (PNG, JPG, or PDF)",
+            type=["png", "jpg", "jpeg", "pdf"],
             key="admin_bg_logo_upload",
         )
 
