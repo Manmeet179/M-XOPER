@@ -38,18 +38,20 @@ DEFAULTS = {
     "company": "OptoPixel Pvt. Ltd.",
     "paper_type": "Letterhead",
     "top_spacing_mm": 10,
+    "left_right_margin_mm": 17,
+    "bottom_margin_mm": 15,
     "show_make": True,
     "show_model": True,
     "show_serial": True,
     "show_mac": True,
     "show_win": True,
     "show_operating_system": True,
-    "make_heading": "MAKE",
-    "model_heading": "MODEL NO",
-    "serial_heading": "SERIAL NO",
+    "make_heading": "Make",
+    "model_heading": "Model No.",
+    "serial_heading": "Serial No.",
     "mac_heading": "MAC ID",
-    "win_heading": "WINDOW KEY",
-    "operating_system_heading": "OPERATING SYSTEM",
+    "win_heading": "Window Key",
+    "operating_system_heading": "Operating System",
     "table_order": ["item", "model_no", "serial_no", "operating_system", "win_key", "mac", "make"],
     "intro_model": True,
     "intro_serial": True,
@@ -951,7 +953,7 @@ def table_fields(item, settings):
         elif key == "make":
             heading = "MAKE"
         else:
-            heading = settings.get(heading_key, key.upper())
+            heading = str(settings.get(heading_key, key.upper())).upper()
             if setting_key and not settings.get(setting_key, True):
                 continue
             if item.get("_windows_detected"):
@@ -1001,11 +1003,17 @@ def draw_certificate_page(pdf, item, company, cert_date, settings):
 
     pdf.saveState()
 
-    shift = float(settings.get("top_spacing_mm", 10)) * 72 / 25.4
-    pdf.translate(0, -shift)
+    # A4 content area controlled from PAGE SETTINGS.
+    # The generated PDF remains true A4.
+    mm = 72 / 25.4
+    top_margin = max(0, float(settings.get("top_spacing_mm", 10))) * mm
+    side_margin = max(5, float(settings.get("left_right_margin_mm", 17))) * mm
+    bottom_margin = max(5, float(settings.get("bottom_margin_mm", 15))) * mm
 
-    left, right = 48, page_w - 48
-    content_w = right - left
+    pdf.translate(0, -top_margin)
+
+    left, right = side_margin, page_w - side_margin
+    content_w = max(100, right - left)
 
     fmt = DATE_FORMATS.get(
         settings.get("date_format"), "%d-%b-%y"
@@ -1144,7 +1152,9 @@ def draw_certificate_page(pdf, item, company, cert_date, settings):
             pdf.drawCentredString(center_x, y, line)
             y -= 11
 
-    y = table_bottom - 35
+    # Bottom-safe certificate content.
+    y = table_bottom - 28
+    safe_bottom = bottom_margin + 18
 
     statement = (
         "Specified component is tested for all its functionalities "
@@ -1153,34 +1163,37 @@ def draw_certificate_page(pdf, item, company, cert_date, settings):
 
     pdf.setFont("Helvetica", 10)
 
-    for line in wrap_text(
-        statement, "Helvetica", 10, content_w
-    ):
+    for line in wrap_text(statement, "Helvetica", 10, content_w):
+        if y < safe_bottom:
+            break
         pdf.drawString(left, y, line)
-        y -= 15
+        y -= 14
 
-    y -= 20
+    y -= 12
     pdf.setFont("Helvetica-Oblique", 10)
 
     sale_statement = (
         f"The above said item is sold to {company or 'Customer'}."
     )
 
-    for line in wrap_text(
-        sale_statement, "Helvetica-Oblique", 10, content_w
-    ):
+    for line in wrap_text(sale_statement, "Helvetica-Oblique", 10, content_w):
+        if y < safe_bottom:
+            break
         pdf.drawString(left, y, line)
-        y -= 15
+        y -= 14
 
-    y -= 20
+    y -= 12
     pdf.setFont("Helvetica", 10)
 
-    pdf.drawString(
-        left, y,
-        f'For {settings.get("company", DEFAULTS["company"])},'
-    )
+    if y >= safe_bottom:
+        pdf.drawString(
+            left, y,
+            f'For {settings.get("company", DEFAULTS["company"])},'
+        )
+        y -= 32
 
-    pdf.drawString(left, y - 45, "Authorized")
+    if y >= safe_bottom:
+        pdf.drawString(left, y, "Authorized")
 
     pdf.restoreState()
     pdf.showPage()
@@ -1959,17 +1972,8 @@ if st.session_state.page == "M-SMART PDF":
             )
 
             for index, page in enumerate(pdf_doc):
-                # Show only the certificate item name in the preview title.
-                # Example: CAMERA, LENS, CAMERA CABLE, etc.
-                if index < len(generated.get("entries", [])):
-                    preview_item = valid_value(
-                        generated["entries"][index]["item"].get("item")
-                    ) or f"Certificate {index + 1}"
-                else:
-                    preview_item = f"Certificate {index + 1}"
-
                 with st.expander(
-                    preview_item,
+                    f"Certificate Preview — Page {index + 1}",
                     expanded=(index == 0),
                 ):
                     pix = page.get_pixmap(
@@ -2160,21 +2164,174 @@ elif st.session_state.page == "M-CERTIFICATE":
 
 elif st.session_state.page == "PAGE SETTINGS":
     st.header("PAGE SETTINGS")
-
-    st.info(
-        "Certificate settings are fixed by the application. "
-        "Only the administrator background logo setting is available here."
+    st.caption(
+        "These settings control both MANUAL and M-SMART PDF certificates."
     )
 
-    # --------------------------------------------------------
-    # ADMIN — BACKGROUND LOGO ONLY
-    # --------------------------------------------------------
-    if st.session_state.get("is_admin", False):
-        st.subheader("BACKGROUND LOGO — ADMIN ONLY")
+    settings = st.session_state.smart_settings
 
+    st.subheader("A4 PAGE LAYOUT")
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        settings["paper_type"] = st.selectbox(
+            "Print Type",
+            ["Letterhead", "Blank Paper"],
+            index=["Letterhead", "Blank Paper"].index(
+                settings.get("paper_type", "Letterhead")
+            ),
+            key="settings_paper_type",
+        )
+
+    with c2:
+        settings["top_spacing_mm"] = st.number_input(
+            "Top to Bottom Content Start (mm)",
+            min_value=0.0,
+            max_value=60.0,
+            value=float(settings.get("top_spacing_mm", 10)),
+            step=1.0,
+            key="settings_top_spacing_mm",
+        )
+
+    with c3:
+        settings["left_right_margin_mm"] = st.number_input(
+            "Left / Right Content Margin (mm)",
+            min_value=5.0,
+            max_value=50.0,
+            value=float(settings.get("left_right_margin_mm", 17)),
+            step=1.0,
+            key="settings_side_margin_mm",
+        )
+
+    settings["bottom_margin_mm"] = st.number_input(
+        "Bottom Safe Margin (mm)",
+        min_value=5.0,
+        max_value=40.0,
+        value=float(settings.get("bottom_margin_mm", 15)),
+        step=1.0,
+        key="settings_bottom_margin_mm",
+    )
+
+    st.info(
+        "PDF is always A4: 210 × 297 mm. "
+        "Top-to-Bottom controls the starting position. "
+        "Left/Right controls the content width. "
+        "Bottom Safe Margin keeps final content inside the A4 page."
+    )
+
+    st.subheader("TABLE FIELD VISIBILITY")
+    a, b, c = st.columns(3)
+
+    with a:
+        settings["show_make"] = st.checkbox(
+            "Show Make", bool(settings.get("show_make", True)),
+            key="settings_show_make"
+        )
+        settings["show_model"] = st.checkbox(
+            "Show Model No.", bool(settings.get("show_model", True)),
+            key="settings_show_model"
+        )
+
+    with b:
+        settings["show_serial"] = st.checkbox(
+            "Show Serial No.", bool(settings.get("show_serial", True)),
+            key="settings_show_serial"
+        )
+        settings["show_mac"] = st.checkbox(
+            "Show MAC ID", bool(settings.get("show_mac", True)),
+            key="settings_show_mac"
+        )
+
+    with c:
+        settings["show_win"] = st.checkbox(
+            "Show Window Key", bool(settings.get("show_win", True)),
+            key="settings_show_win"
+        )
+        settings["show_operating_system"] = st.checkbox(
+            "Show Operating System",
+            bool(settings.get("show_operating_system", True)),
+            key="settings_show_operating_system"
+        )
+
+    st.subheader("CERTIFICATE HEADING TEXT")
+    h1, h2, h3 = st.columns(3)
+
+    with h1:
+        settings["make_heading"] = st.text_input(
+            "Make Heading", str(settings.get("make_heading", "Make")),
+            key="settings_make_heading"
+        )
+        settings["model_heading"] = st.text_input(
+            "Model Heading", str(settings.get("model_heading", "Model No.")),
+            key="settings_model_heading"
+        )
+
+    with h2:
+        settings["serial_heading"] = st.text_input(
+            "Serial Heading", str(settings.get("serial_heading", "Serial No.")),
+            key="settings_serial_heading"
+        )
+        settings["mac_heading"] = st.text_input(
+            "MAC Heading", str(settings.get("mac_heading", "MAC ID")),
+            key="settings_mac_heading"
+        )
+
+    with h3:
+        settings["win_heading"] = st.text_input(
+            "Window Key Heading", str(settings.get("win_heading", "Window Key")),
+            key="settings_win_heading"
+        )
+        settings["operating_system_heading"] = st.text_input(
+            "Operating System Heading",
+            str(settings.get("operating_system_heading", "Operating System")),
+            key="settings_os_heading"
+        )
+
+    st.subheader("INTRO SENTENCE")
+    x1, x2, x3 = st.columns(3)
+
+    with x1:
+        settings["intro_model"] = st.checkbox(
+            "Model No.", bool(settings.get("intro_model", True)),
+            key="settings_intro_model"
+        )
+        settings["intro_serial"] = st.checkbox(
+            "Serial No.", bool(settings.get("intro_serial", True)),
+            key="settings_intro_serial"
+        )
+
+    with x2:
+        settings["intro_mac"] = st.checkbox(
+            "MAC ID", bool(settings.get("intro_mac", False)),
+            key="settings_intro_mac"
+        )
+        settings["intro_make"] = st.checkbox(
+            "Make", bool(settings.get("intro_make", False)),
+            key="settings_intro_make"
+        )
+
+    with x3:
+        settings["intro_operating_system"] = st.checkbox(
+            "Operating System",
+            bool(settings.get("intro_operating_system", False)),
+            key="settings_intro_os"
+        )
+        settings["intro_win"] = st.checkbox(
+            "Window Key", bool(settings.get("intro_win", False)),
+            key="settings_intro_win"
+        )
+
+    st.success(
+        "Settings are active immediately. Generate the certificate again "
+        "to apply changed settings to the PDF."
+    )
+
+    st.divider()
+    st.subheader("BACKGROUND LOGO — ADMIN ONLY")
+
+    if st.session_state.get("is_admin", False):
         st.caption(
-            "Upload or replace the private A4 letterhead/background image. "
-            "The image is stored in the Aiven PostgreSQL database."
+            "Upload or replace the private A4 letterhead/background image."
         )
 
         uploaded_bg = st.file_uploader(
@@ -2206,13 +2363,9 @@ elif st.session_state.page == "PAGE SETTINGS":
                 except Exception as exc:
                     st.error(f"Image save failed: {exc}")
 
-        if st.button(
-            "CHECK SAVED BACKGROUND LOGO",
-            key="check_saved_bg_logo",
-        ):
+        if st.button("CHECK SAVED BACKGROUND LOGO", key="check_saved_bg_logo"):
             try:
                 saved_logo = get_bg_logo()
-
                 if saved_logo:
                     st.image(
                         saved_logo[0],
@@ -2240,4 +2393,3 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True,
         )
-
