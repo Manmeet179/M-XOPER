@@ -848,7 +848,7 @@ def read_excel(uploaded_file):
     if not items:
         raise ValueError("No item rows were found in the Excel file.")
 
-    company = company or ""
+    company = company or "Customer"
     company = re.sub(r"\s*TVC\s*\d+.*$", "", company, flags=re.I).strip()
     company = re.sub(r"\s*\([^)]*\)\s*$", "", company).strip() or "Customer"
 
@@ -2070,7 +2070,7 @@ elif st.session_state.page == "M-CERTIFICATE":
         with right:
             company = st.text_input(
                 "Sold To / Company",
-                value="Customer",
+                value="",
             )
 
             cert_date = st.date_input(
