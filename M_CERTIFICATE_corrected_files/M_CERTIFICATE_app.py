@@ -9,7 +9,10 @@ import streamlit as st
 import openpyxl
 import fitz
 from PIL import Image
-import psycopg2
+try:
+    import psycopg2
+except ImportError:
+    psycopg2 = None
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase.pdfmetrics import stringWidth
@@ -40,11 +43,20 @@ DEFAULTS = {
     "show_serial": True,
     "show_mac": True,
     "show_win": True,
+    "show_operating_system": True,
     "make_heading": "MAKE",
     "model_heading": "MODEL NO",
     "serial_heading": "SERIAL NO",
     "mac_heading": "MAC ID",
-    "win_heading": "WIN KEY",
+    "win_heading": "WINDOW KEY",
+    "operating_system_heading": "OPERATING SYSTEM",
+    "table_order": ["item", "model_no", "serial_no", "operating_system", "win_key", "make", "mac"],
+    "intro_model": True,
+    "intro_serial": True,
+    "intro_mac": False,
+    "intro_make": False,
+    "intro_operating_system": False,
+    "intro_win": False,
 }
 
 DATE_FORMATS = {
@@ -72,6 +84,9 @@ st.session_state.setdefault("smart_generated", None)
 st.session_state.setdefault("manual_generated", None)
 st.session_state.setdefault("authenticated", False)
 st.session_state.setdefault("is_admin", False)
+st.session_state.setdefault("excel_upload_signature", None)
+st.session_state.setdefault("windows_queue", [])
+st.session_state.setdefault("windows_decisions", {})
 
 
 # ============================================================
@@ -208,6 +223,8 @@ if not st.session_state.authenticated:
 # ============================================================
 
 def get_db_connection():
+    if psycopg2 is None:
+        raise RuntimeError("psycopg2 is not installed. Install psycopg2-binary for database/letterhead features.")
     return psycopg2.connect(st.secrets["postgres"]["url"])
 
 
@@ -532,6 +549,77 @@ def extract_serial_and_mac(serial_value, mac_value):
 
 
 # ============================================================
+# WINDOWS KEY / OPERATING SYSTEM DETECTION
+# ============================================================
+
+WINDOWS_KEY_RE = re.compile(
+    r"\b(?:[A-Z0-9]{5}-){4}[A-Z0-9]{5}\b",
+    flags=re.I,
+)
+
+
+def extract_windows_key(value):
+    """Return a Windows/Product key found anywhere in a cell."""
+    text = clean(value)
+    if not text:
+        return ""
+    match = WINDOWS_KEY_RE.search(text)
+    return match.group(0) if match else ""
+
+
+def is_operating_system_text(value):
+    text = clean(value).upper()
+    if not text:
+        return False
+    return bool(
+        re.search(r"\bWINDOWS?\s*(?:10|11)\b", text)
+        or re.search(r"\bWIN\s*(?:10|11)\b", text)
+        or "WINDOWS KEY" in text
+        or text.startswith("WIN ")
+    )
+
+
+def clean_operating_system(value):
+    text = valid_value(value)
+    if not text:
+        return ""
+    return strip_brackets(text)
+
+
+def intro_labels(item, settings):
+    """Build intro labels independently from table visibility/order."""
+    candidates = [
+        ("model_no", settings.get("model_heading", "MODEL NO"), "intro_model"),
+        ("serial_no", settings.get("serial_heading", "SERIAL NO"), "intro_serial"),
+        ("mac", settings.get("mac_heading", "MAC ID"), "intro_mac"),
+        ("make", settings.get("make_heading", "MAKE"), "intro_make"),
+        ("operating_system", settings.get("operating_system_heading", "OPERATING SYSTEM"), "intro_operating_system"),
+        ("win_key", settings.get("win_heading", "WINDOW KEY"), "intro_win"),
+    ]
+    labels = []
+    for key, heading, setting_key in candidates:
+        if settings.get(setting_key, False) and valid_value(item.get(key)):
+            labels.append(heading)
+    return labels
+
+
+def build_intro(item, settings):
+    item_name = valid_value(item.get("item")) or "TEMP"
+    labels = intro_labels(item, settings)
+    intro = f"This test certificate is for {item_name}"
+    if labels:
+        if len(labels) == 1:
+            joined = labels[0]
+        elif len(labels) == 2:
+            joined = f"{labels[0]} and {labels[1]}"
+        else:
+            joined = ", ".join(labels[:-1]) + f" and {labels[-1]}"
+        intro += " having " + joined
+    intro += " as per below table."
+    return intro
+
+
+# ============================================================
 # EXCEL READER
 # ============================================================
 
@@ -543,67 +631,41 @@ def read_excel(uploaded_file):
     date_raw = ""
     header_row = None
 
-    for row in range(1, min(ws.max_row, 15) + 1):
+    for row in range(1, min(ws.max_row, 20) + 1):
         values = [
-            clean(ws.cell(row, col).value)
-            .lower()
-            .replace(".", "")
-            .strip()
+            clean(ws.cell(row, col).value).lower().replace(".", "").strip()
             for col in range(1, ws.max_column + 1)
         ]
 
         for col in range(1, ws.max_column + 1):
             value = clean(ws.cell(row, col).value)
-
             if value.lower().startswith("company name"):
-                company = re.sub(
-                    r"^company name\s*:?\s*",
-                    "",
-                    value,
-                    flags=re.I,
-                ).strip()
-
+                company = re.sub(r"^company name\s*:?\s*", "", value, flags=re.I).strip()
             if value.lower().startswith("date"):
-                date_raw = re.sub(
-                    r"^date\s*:?\s*",
-                    "",
-                    value,
-                    flags=re.I,
-                ).strip()
+                date_raw = re.sub(r"^date\s*:?\s*", "", value, flags=re.I).strip()
 
-        has_name = any(
-            value in values
-            for value in ("name", "item", "material", "item name")
-        )
-
+        has_name = any(value in values for value in ("name", "item", "material", "item name", "description"))
         has_model_or_serial = any(
             value in values
             for value in (
-                "mn", "model", "model no", "model number",
-                "sn", "serial", "serial no", "serial number",
+                "mn", "model", "model no", "model number", "modelno",
+                "sn", "serial", "serial no", "serial number", "serialno",
             )
         )
+        has_windows = any("windows" in value or value.startswith("win ") for value in values)
 
-        if has_name and has_model_or_serial:
+        if (has_name and has_model_or_serial) or (has_name and has_windows):
             header_row = row
             break
 
     if header_row is None:
         raise ValueError(
-            "Excel headings could not be found. "
-            "Add a Name/Item heading along with Model/MN or Serial/SN."
+            "Excel headings could not be found. Add a Name/Item heading along with Model/MN or Serial/SN."
         )
 
     headers = {}
-
     for col in range(1, ws.max_column + 1):
-        heading = (
-            clean(ws.cell(header_row, col).value)
-            .lower()
-            .replace(".", "")
-            .strip()
-        )
-
+        heading = clean(ws.cell(header_row, col).value).lower().replace(".", "").strip()
         if heading:
             headers[heading] = col
 
@@ -613,29 +675,13 @@ def read_excel(uploaded_file):
                 return headers[name]
         return None
 
-    name_col = find_col(
-        "name", "item", "material", "item name", "description"
-    )
-
+    name_col = find_col("name", "item", "material", "item name", "description")
     make_col = find_col("make", "brand", "manufacturer")
-
-    model_col = find_col(
-        "mn", "model", "model no", "model number", "modelno"
-    )
-
-    serial_col = find_col(
-        "sn", "serial", "serial no", "serial number", "serialno"
-    )
-
-    mac_col = find_col(
-        "mac", "mac id", "mac address", "macid"
-    )
-
-    win_col = find_col(
-        "win key", "windows key", "product key",
-        "license key", "licence key",
-    )
-
+    model_col = find_col("mn", "model", "model no", "model number", "modelno")
+    serial_col = find_col("sn", "serial", "serial no", "serial number", "serialno")
+    mac_col = find_col("mac", "mac id", "mac address", "macid")
+    win_col = find_col("win key", "windows key", "product key", "license key", "licence key")
+    os_col = find_col("operating system", "os", "operating system name", "windows version")
     qty_col = find_col("qty", "quantity")
 
     if not name_col:
@@ -645,72 +691,93 @@ def read_excel(uploaded_file):
     previous_item = None
 
     for row in range(header_row + 1, ws.max_row + 1):
-        name = valid_value(
-            merged_cell_value(ws, row, name_col)
-        )
+        row_values = [clean(ws.cell(row, col).value) for col in range(1, ws.max_column + 1)]
+        row_values_valid = [valid_value(v) for v in row_values]
 
-        make = valid_value(
-            merged_cell_value(ws, row, make_col)
-        )
+        name = valid_value(merged_cell_value(ws, row, name_col))
+        make = valid_value(merged_cell_value(ws, row, make_col)) if make_col else ""
+        model = valid_value(merged_cell_value(ws, row, model_col)) if model_col else ""
+        serial = valid_value(ws.cell(row, serial_col).value) if serial_col else ""
+        mac = valid_value(ws.cell(row, mac_col).value) if mac_col else ""
+        win_key = valid_value(ws.cell(row, win_col).value) if win_col else ""
+        operating_system = valid_value(ws.cell(row, os_col).value) if os_col else ""
 
-        model = (
-            valid_value(merged_cell_value(ws, row, model_col))
-            if model_col else ""
-        )
+        # Search the entire row for a Windows key. This handles keys placed
+        # in Make, Serial, Model, or any other column.
+        detected_key = ""
+        for value in row_values_valid:
+            detected_key = extract_windows_key(value)
+            if detected_key:
+                break
+        win_key = win_key or detected_key
 
-        serial = (
-            valid_value(ws.cell(row, serial_col).value)
-            if serial_col else ""
-        )
-
-        mac = (
-            valid_value(ws.cell(row, mac_col).value)
-            if mac_col else ""
-        )
-
-        win_key = (
-            valid_value(ws.cell(row, win_col).value)
-            if win_col else ""
-        )
-
-        # Extract the MAC address before removing bracketed content.
-        # This supports MAC addresses in the Serial Number field and
-        # MAC addresses stored in a separate Excel column.
         serial, mac = extract_serial_and_mac(serial, mac)
-
-        # Clean the model number separately.
         model = strip_brackets(model)
 
-        qty_raw = ws.cell(row, qty_col).value if qty_col else 1
+        # Detect an operating-system description anywhere in the row.
+        if not operating_system:
+            for value in row_values_valid:
+                if is_operating_system_text(value) and not extract_windows_key(value):
+                    upper = value.upper()
+                    if "WINDOWS KEY" not in upper and not WINDOWS_KEY_RE.search(value):
+                        operating_system = clean_operating_system(value)
+                        break
 
+        # Special continuation row, e.g.
+        # WIN 11 IOT ENT 2024 LTSC | QWW8V-... | | 
+        # or Windows Key | Radhe Info | Win 11 IOT ENT LTSC | KNB2W-...
+        row_name_upper = name.upper()
+        is_windows_row = (
+            row_name_upper.startswith("WIN ")
+            or row_name_upper.startswith("WINDOWS ")
+            or "WINDOWS KEY" in row_name_upper
+            or (detected_key and any(is_operating_system_text(v) for v in row_values_valid))
+        )
+
+        # A row whose name is Windows/Win is metadata for the previous item,
+        # not a new certificate.
+        if is_windows_row and previous_item:
+            os_text = operating_system
+            if not os_text:
+                if is_operating_system_text(name) and "WINDOWS KEY" not in row_name_upper:
+                    os_text = clean_operating_system(name)
+                elif model and is_operating_system_text(model):
+                    os_text = clean_operating_system(model)
+                elif serial and is_operating_system_text(serial):
+                    os_text = clean_operating_system(serial)
+
+            if os_text:
+                previous_item["operating_system"] = os_text
+            if win_key:
+                previous_item["win_key"] = win_key
+            previous_item["_windows_detected"] = bool(win_key)
+            previous_item.setdefault("_windows_source_row", row)
+            continue
+
+        # If the key is on the same normal item row, keep it with that item.
+        if not any([name, make, model, serial, mac, win_key, operating_system]):
+            continue
+
+        if not name:
+            if previous_item and (win_key or operating_system or serial or mac):
+                if win_key:
+                    previous_item["win_key"] = win_key
+                if operating_system:
+                    previous_item["operating_system"] = operating_system
+                if serial and not previous_item.get("serial_no"):
+                    previous_item["serial_no"] = serial
+                if mac and not previous_item.get("mac"):
+                    previous_item["mac"] = mac
+                previous_item["_windows_detected"] = bool(win_key)
+                previous_item.setdefault("_windows_source_row", row)
+                continue
+            continue
+
+        qty_raw = ws.cell(row, qty_col).value if qty_col else 1
         try:
             qty = max(1, int(float(qty_raw or 1)))
         except (TypeError, ValueError):
             qty = 1
-
-        if model and (
-            model.upper().startswith("WIN ")
-            or model.upper().startswith("WINDOWS ")
-        ):
-            if previous_item:
-                previous_item["win_key"] = win_key or serial
-            continue
-
-        if not any([name, make, model, serial, mac, win_key]):
-            continue
-
-        if not name:
-            if previous_item and any([serial, mac, win_key]):
-                name = previous_item.get("item", "")
-                make = make or previous_item.get("make", "")
-                model = model or previous_item.get("model_no", "")
-            else:
-                if previous_item and win_key:
-                    previous_item["win_key"] = win_key
-                continue
-
-        if not name:
-            continue
 
         item = {
             "item": name,
@@ -718,8 +785,11 @@ def read_excel(uploaded_file):
             "model_no": model,
             "serial_no": serial,
             "mac": mac,
+            "operating_system": operating_system,
             "win_key": win_key,
             "qty": qty,
+            "_windows_detected": bool(win_key),
+            "_windows_source_row": row if win_key else None,
         }
 
         items.append(item)
@@ -729,12 +799,8 @@ def read_excel(uploaded_file):
         raise ValueError("No item rows were found in the Excel file.")
 
     company = company or "Customer"
-    company = re.sub(
-        r"\s*TVC\s*\d+.*$", "", company, flags=re.I
-    ).strip()
-    company = re.sub(
-        r"\s*\([^)]*\)\s*$", "", company
-    ).strip() or "Customer"
+    company = re.sub(r"\s*TVC\s*\d+.*$", "", company, flags=re.I).strip()
+    company = re.sub(r"\s*\([^)]*\)\s*$", "", company).strip() or "Customer"
 
     return {
         "company": company,
@@ -747,25 +813,42 @@ def read_excel(uploaded_file):
 # DYNAMIC TABLE COLUMNS
 # ============================================================
 
+FIELD_DEFINITIONS = {
+    "item": ("ITEM", None),
+    "make": ("make_heading", "show_make"),
+    "model_no": ("model_heading", "show_model"),
+    "serial_no": ("serial_heading", "show_serial"),
+    "mac": ("mac_heading", "show_mac"),
+    "operating_system": ("operating_system_heading", "show_operating_system"),
+    "win_key": ("win_heading", "show_win"),
+}
+
+DEFAULT_TABLE_ORDER = ["item", "model_no", "serial_no", "operating_system", "win_key", "make", "mac"]
+
+
 def table_fields(item, settings):
-    fields = [
-        ("ITEM", valid_value(item.get("item")))
-    ]
+    order = list(settings.get("table_order") or DEFAULT_TABLE_ORDER)
+    if "item" not in order:
+        order.insert(0, "item")
+    else:
+        order.remove("item")
+        order.insert(0, "item")
 
-    optional_fields = [
-        ("make", settings.get("make_heading", "MAKE"), "show_make"),
-        ("model_no", settings.get("model_heading", "MODEL NO"), "show_model"),
-        ("serial_no", settings.get("serial_heading", "SERIAL NO"), "show_serial"),
-        ("mac", settings.get("mac_heading", "MAC ID"), "show_mac"),
-        ("win_key", settings.get("win_heading", "WIN KEY"), "show_win"),
-    ]
-
-    for key, heading, setting_key in optional_fields:
+    fields = []
+    for key in order:
+        definition = FIELD_DEFINITIONS.get(key)
+        if not definition:
+            continue
+        heading_key, setting_key = definition
+        if key == "item":
+            heading = "ITEM"
+        else:
+            heading = settings.get(heading_key, key.upper())
+            if setting_key and not settings.get(setting_key, True):
+                continue
         value = valid_value(item.get(key))
-
-        if settings.get(setting_key, True) and value:
+        if value:
             fields.append((heading, value))
-
     return fields
 
 
@@ -856,16 +939,7 @@ def draw_certificate_page(pdf, item, company, cert_date, settings):
     item_name = valid_value(item.get("item")) or "TEMP"
     fields = table_fields(item, settings)
 
-    present_labels = [
-        heading for heading, value in fields[1:] if value
-    ]
-
-    intro = f"This test certificate is for {item_name}"
-
-    if present_labels:
-        intro += " having " + ", ".join(present_labels)
-
-    intro += " as per below table"
+    intro = build_intro(item, settings)
 
     intro_lines = wrap_text(
         intro, "Helvetica", 10.5, content_w
@@ -1076,10 +1150,7 @@ def create_word(data, settings):
 
             item_name = valid_value(item.get("item")) or "TEMP"
 
-            doc.add_paragraph(
-                f"This test certificate is for {item_name} "
-                "as per below table."
-            )
+            doc.add_paragraph(build_intro(item, settings))
 
             fields = table_fields(item, settings)
 
@@ -1513,13 +1584,14 @@ if st.session_state.page == "M-SMART PDF":
 
     if uploads:
         try:
-            parsed_files = [
-                read_excel(uploaded)
-                for uploaded in uploads
-            ]
+            upload_signature = tuple((u.name, getattr(u, "size", 0)) for u in uploads)
+            if st.session_state.get("excel_upload_signature") != upload_signature:
+                st.session_state.excel_upload_signature = upload_signature
+                st.session_state.windows_queue = []
+                st.session_state.windows_decisions = {}
 
+            parsed_files = [read_excel(uploaded) for uploaded in uploads]
             all_items = []
-
             for parsed_file in parsed_files:
                 for original in parsed_file["items"]:
                     item = dict(original)
@@ -1529,60 +1601,112 @@ if st.session_state.page == "M-SMART PDF":
 
             company = parsed_files[0]["company"]
             cert_date = parsed_files[0]["date"]
+            parsed = {"company": company, "date": cert_date, "items": all_items}
 
-            parsed = {
-                "company": company,
-                "date": cert_date,
-                "items": all_items,
-            }
+            # Create a warning queue for every imported Windows key.
+            if not st.session_state.get("windows_queue"):
+                for idx, item in enumerate(all_items):
+                    if item.get("_windows_detected") and idx not in st.session_state.get("windows_decisions", {}):
+                        st.session_state.windows_queue.append(idx)
 
-            total_certificates = sum(
-                max(1, int(item.get("qty", 1)))
-                for item in all_items
-            )
-
+            total_certificates = sum(max(1, int(item.get("qty", 1))) for item in all_items)
             st.success(
                 f"{len(uploads)} Excel file(s) read successfully. "
-                f"Total item rows: {len(all_items)}. "
-                f"Certificates to generate: {total_certificates}."
+                f"Total item rows: {len(all_items)}. Certificates to generate: {total_certificates}."
             )
 
-            st.subheader("Excel Data Preview")
+            # Windows-key popup dialog.
+            queue = st.session_state.get("windows_queue", [])
+            if queue and hasattr(st, "dialog"):
+                idx = queue[0]
+                detected_item = all_items[idx]
 
-            st.dataframe(
-                [{
+                @st.dialog("Windows Key Detected")
+                def windows_key_dialog():
+                    st.warning(
+                        f"Sr No {idx + 1} in this data having Windows key?"
+                    )
+                    st.write(f"**Item:** {detected_item.get('item', '')}")
+                    if detected_item.get("operating_system"):
+                        st.write(f"**Operating System:** {detected_item.get('operating_system')}")
+                    st.code(detected_item.get("win_key", ""))
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button("YES — KEEP", type="primary", use_container_width=True):
+                            st.session_state.windows_decisions[idx] = True
+                            st.session_state.windows_queue.pop(0)
+                            st.rerun()
+                    with c2:
+                        if st.button("NO — REMOVE", use_container_width=True):
+                            st.session_state.windows_decisions[idx] = False
+                            st.session_state.windows_queue.pop(0)
+                            st.rerun()
+
+                windows_key_dialog()
+
+            # Apply YES/NO decisions before showing the editable grid.
+            for decision_idx, keep_key in st.session_state.get("windows_decisions", {}).items():
+                if 0 <= decision_idx < len(all_items) and not keep_key:
+                    all_items[decision_idx]["win_key"] = ""
+
+            st.subheader("Excel Data Preview — Editable")
+            editor_rows = []
+            for item in all_items:
+                editor_rows.append({
                     "Item": item.get("item", ""),
                     "Make": item.get("make", ""),
                     "Model No": item.get("model_no", ""),
                     "Serial No": item.get("serial_no", ""),
+                    "Operating System": item.get("operating_system", ""),
+                    "WINDOW KEY": item.get("win_key", ""),
                     "MAC ID": item.get("mac", ""),
-                    "WIN KEY": item.get("win_key", ""),
-                    "Qty": item.get("qty", 1),
-                } for item in all_items],
+                    "Qty": int(item.get("qty", 1) or 1),
+                })
+
+            edited_df = st.data_editor(
+                editor_rows,
                 use_container_width=True,
                 hide_index=True,
+                num_rows="fixed",
+                column_config={
+                    "Item": st.column_config.TextColumn("ITEM"),
+                    "Make": st.column_config.TextColumn("MAKE"),
+                    "Model No": st.column_config.TextColumn("MODEL NO"),
+                    "Serial No": st.column_config.TextColumn("SERIAL NO"),
+                    "Operating System": st.column_config.TextColumn("OPERATING SYSTEM"),
+                    "WINDOW KEY": st.column_config.TextColumn("WINDOW KEY"),
+                    "MAC ID": st.column_config.TextColumn("MAC ID"),
+                    "Qty": st.column_config.NumberColumn("QTY", min_value=1, step=1),
+                },
+                key="smart_excel_editor",
             )
 
-            if st.button(
-                "✨ GENERATE CERTIFICATES",
-                type="primary",
-                use_container_width=True,
-            ):
+            if st.button("✨ GENERATE CERTIFICATES", type="primary", use_container_width=True, disabled=bool(st.session_state.get("windows_queue"))):
+                updated_items = []
+                for idx, row in enumerate(edited_df.to_dict("records")):
+                    original = dict(all_items[idx])
+                    original["item"] = valid_value(row.get("Item"))
+                    original["make"] = valid_value(row.get("Make"))
+                    original["model_no"] = strip_brackets(row.get("Model No", ""))
+                    original["serial_no"] = valid_value(row.get("Serial No"))
+                    original["operating_system"] = valid_value(row.get("Operating System"))
+                    original["win_key"] = valid_value(row.get("WINDOW KEY"))
+                    original["mac"] = valid_value(row.get("MAC ID"))
+                    try:
+                        original["qty"] = max(1, int(row.get("Qty", 1) or 1))
+                    except (TypeError, ValueError):
+                        original["qty"] = 1
+                    original.pop("_windows_detected", None)
+                    original.pop("_windows_source_row", None)
+                    updated_items.append(original)
+
+                parsed["items"] = updated_items
                 entries = make_entries(parsed, settings)
-
-                st.session_state.smart_generated = build_bundle(
-                    entries, company, cert_date, settings
-                )
-
-                st.success(
-                    f"{len(entries)} individual certificates generated successfully."
-                )
-
+                st.session_state.smart_generated = build_bundle(entries, company, cert_date, settings)
+                st.success(f"{len(entries)} individual certificates generated successfully.")
                 saved = st.session_state.smart_generated["saved_folder"]
-
                 if saved:
                     st.info("Files saved locally: " + saved)
-
                 st.rerun()
 
         except Exception as exc:
@@ -1704,6 +1828,7 @@ elif st.session_state.page == "M-CERTIFICATE":
             )
 
             mac = st.text_input("MAC ID")
+            operating_system = st.text_input("Operating System")
             win_key = st.text_input("WIN KEY")
 
         st.caption(
@@ -1734,6 +1859,7 @@ elif st.session_state.page == "M-CERTIFICATE":
                 "model_no": strip_brackets(model),
                 "serial_no": serial_clean,
                 "mac": mac_clean,
+                "operating_system": valid_value(operating_system),
                 "win_key": valid_value(win_key),
                 "qty": 1,
                 "_company": company,
@@ -1870,99 +1996,92 @@ elif st.session_state.page == "PAGE SETTINGS":
 
         with left:
             date_format = st.selectbox(
-                "Date Format",
-                list(DATE_FORMATS),
-                index=list(DATE_FORMATS).index(
-                    settings["date_format"]
-                ),
+                "Date Format", list(DATE_FORMATS),
+                index=list(DATE_FORMATS).index(settings["date_format"]),
             )
-
             paper_type = st.selectbox(
-                "Paper Type",
-                ["Letterhead", "Blank paper"],
-                index=["Letterhead", "Blank paper"].index(
-                    settings["paper_type"]
-                ),
+                "Paper Type", ["Letterhead", "Blank paper"],
+                index=["Letterhead", "Blank paper"].index(settings["paper_type"]),
             )
-
             top_spacing = st.number_input(
-                "Content Top Spacing (mm)",
-                min_value=0,
-                max_value=60,
-                value=int(settings["top_spacing_mm"]),
-                step=1,
+                "Content Top Spacing (mm)", min_value=0, max_value=60,
+                value=int(settings["top_spacing_mm"]), step=1,
             )
-
-            issuing_company = st.text_input(
-                "Certificate Issued By",
-                value=settings["company"],
-            )
+            issuing_company = st.text_input("Certificate Issued By", value=settings["company"])
 
         with right:
-            make_heading = st.text_input(
-                "Make Heading",
-                value=settings["make_heading"],
-            )
-
-            model_heading = st.text_input(
-                "Model Heading",
-                value=settings["model_heading"],
-            )
-
-            serial_heading = st.text_input(
-                "Serial Heading",
-                value=settings["serial_heading"],
-            )
-
-            mac_heading = st.text_input(
-                "MAC Heading",
-                value=settings["mac_heading"],
-            )
-
-            win_heading = st.text_input(
-                "WIN KEY Heading",
-                value=settings["win_heading"],
-            )
+            make_heading = st.text_input("Make Heading", value=settings["make_heading"])
+            model_heading = st.text_input("Model Heading", value=settings["model_heading"])
+            serial_heading = st.text_input("Serial Heading", value=settings["serial_heading"])
+            mac_heading = st.text_input("MAC Heading", value=settings["mac_heading"])
+            os_heading = st.text_input("Operating System Heading", value=settings.get("operating_system_heading", "OPERATING SYSTEM"))
+            win_heading = st.text_input("WINDOW KEY Heading", value=settings.get("win_heading", "WINDOW KEY"))
 
         st.subheader("Optional Table Columns")
-
-        a, b, c, d, e = st.columns(5)
-
+        a, b, c, d, e, f = st.columns(6)
         with a:
-            show_make = st.checkbox(
-                "Show Make",
-                value=settings["show_make"],
-            )
-
+            show_make = st.checkbox("Show Make", value=settings["show_make"])
         with b:
-            show_model = st.checkbox(
-                "Show Model No",
-                value=settings["show_model"],
-            )
-
+            show_model = st.checkbox("Show Model No", value=settings["show_model"])
         with c:
-            show_serial = st.checkbox(
-                "Show Serial No",
-                value=settings["show_serial"],
-            )
-
+            show_serial = st.checkbox("Show Serial No", value=settings["show_serial"])
         with d:
-            show_mac = st.checkbox(
-                "Show MAC ID",
-                value=settings["show_mac"],
-            )
-
+            show_mac = st.checkbox("Show MAC ID", value=settings["show_mac"])
         with e:
-            show_win = st.checkbox(
-                "Show WIN KEY",
-                value=settings["show_win"],
-            )
+            show_os = st.checkbox("Show Operating System", value=settings.get("show_operating_system", True))
+        with f:
+            show_win = st.checkbox("Show WINDOW KEY", value=settings["show_win"])
 
-        save_settings = st.form_submit_button(
-            "SAVE SETTINGS",
-            type="primary",
-            use_container_width=True,
-        )
+        st.subheader("Table Heading Order")
+        st.caption("ITEM always remains first. Change the remaining positions as required.")
+        order_options = [
+            ("make", "MAKE"),
+            ("model_no", "MODEL NO"),
+            ("serial_no", "SERIAL NO"),
+            ("mac", "MAC ID"),
+            ("operating_system", "OPERATING SYSTEM"),
+            ("win_key", "WINDOW KEY"),
+        ]
+        option_keys = [x[0] for x in order_options]
+        option_labels = dict(order_options)
+        current_order = [x for x in settings.get("table_order", DEFAULT_TABLE_ORDER) if x != "item" and x in option_keys]
+        for key in option_keys:
+            if key not in current_order:
+                current_order.append(key)
+
+        position_cols = st.columns(6)
+        selected_order = []
+        remaining = current_order[:]
+        for pos, col in enumerate(position_cols):
+            with col:
+                current = current_order[pos] if pos < len(current_order) else remaining[0]
+                choices = [k for k in option_keys if k not in selected_order]
+                idx = choices.index(current) if current in choices else 0
+                chosen = st.selectbox(
+                    f"Position {pos + 2}", choices,
+                    index=idx,
+                    format_func=lambda x: option_labels[x],
+                    key=f"table_order_pos_{pos}",
+                )
+                selected_order.append(chosen)
+
+        st.subheader("Introduction Line — Independent Settings")
+        st.caption("These settings control only the sentence above the table, not table columns.")
+        i1, i2, i3, i4, i5, i6 = st.columns(6)
+        with i1:
+            intro_model = st.checkbox("Model No", value=settings.get("intro_model", True))
+        with i2:
+            intro_serial = st.checkbox("Serial No", value=settings.get("intro_serial", True))
+        with i3:
+            intro_mac = st.checkbox("MAC ID", value=settings.get("intro_mac", False))
+        with i4:
+            intro_make = st.checkbox("Make", value=settings.get("intro_make", False))
+        with i5:
+            intro_os = st.checkbox("Operating System", value=settings.get("intro_operating_system", False))
+        with i6:
+            intro_win = st.checkbox("WINDOW KEY", value=settings.get("intro_win", False))
+
+        save_settings = st.form_submit_button("SAVE SETTINGS", type="primary", use_container_width=True)
 
     if save_settings:
         st.session_state.smart_settings.update({
@@ -1974,17 +2093,24 @@ elif st.session_state.page == "PAGE SETTINGS":
             "model_heading": model_heading.strip() or "MODEL NO",
             "serial_heading": serial_heading.strip() or "SERIAL NO",
             "mac_heading": mac_heading.strip() or "MAC ID",
-            "win_heading": win_heading.strip() or "WIN KEY",
+            "operating_system_heading": os_heading.strip() or "OPERATING SYSTEM",
+            "win_heading": win_heading.strip() or "WINDOW KEY",
             "show_make": show_make,
             "show_model": show_model,
             "show_serial": show_serial,
             "show_mac": show_mac,
+            "show_operating_system": show_os,
             "show_win": show_win,
+            "table_order": ["item"] + selected_order,
+            "intro_model": intro_model,
+            "intro_serial": intro_serial,
+            "intro_mac": intro_mac,
+            "intro_make": intro_make,
+            "intro_operating_system": intro_os,
+            "intro_win": intro_win,
         })
-
         st.session_state.smart_generated = None
         st.session_state.manual_generated = None
-
         st.success("Settings saved for this session.")
         st.rerun()
 
