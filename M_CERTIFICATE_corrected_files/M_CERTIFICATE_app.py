@@ -764,12 +764,22 @@ def read_excel(uploaded_file):
         # text from MN/model into OPERATING SYSTEM and keep the product key
         # only in WINDOW KEY (not duplicated as SERIAL NO.).
         if is_standalone_windows_key_item:
+            # A separate "Windows Key" row is a real certificate.  Its
+            # source data is ALWAYS stored canonically as:
+            #   operating_system = OS text
+            #   win_key          = Windows product key
+            # The popup later decides whether those values are displayed
+            # under OS/WINDOW KEY or under MODEL NO/SERIAL NO.
             if not operating_system and is_operating_system_text(model):
                 operating_system = clean_operating_system(model)
             if not operating_system and is_operating_system_text(serial):
                 operating_system = clean_operating_system(serial)
             if not win_key:
                 win_key = detected_key
+
+            # Never let a Windows OS/key leak into the real model/serial
+            # fields.  This is important because the popup is only a
+            # heading choice, not a data-conversion step.
             model = ""
             serial = ""
 
@@ -866,6 +876,36 @@ DEFAULT_TABLE_ORDER = ["item", "model_no", "serial_no", "operating_system", "win
 
 def table_fields(item, settings):
     # ITEM is always first and MAKE is always last.
+    # Standalone Windows Key certificates are special: the popup controls
+    # ONLY the two headings.  Their underlying data is always
+    # operating_system + win_key.
+    if item.get("_windows_standalone"):
+        mode = item.get("_windows_heading_mode", "os_win")
+        fields = []
+
+        item_value = valid_value(item.get("item"))
+        make_value = valid_value(item.get("make"))
+        os_value = valid_value(item.get("operating_system"))
+        win_value = valid_value(item.get("win_key"))
+
+        if item_value:
+            fields.append(("ITEM", item_value))
+
+        if mode == "model_serial":
+            if os_value:
+                fields.append(("MODEL NO", os_value))
+            if win_value:
+                fields.append(("SERIAL NO", win_value))
+        else:
+            if os_value:
+                fields.append(("OPERATING SYSTEM", os_value))
+            if win_value:
+                fields.append(("WINDOW KEY", win_value))
+
+        if make_value:
+            fields.append(("MAKE", make_value))
+        return fields
+
     configured = list(settings.get("table_order") or DEFAULT_TABLE_ORDER)
     middle = [
         key for key in configured
@@ -876,66 +916,19 @@ def table_fields(item, settings):
             middle.append(key)
 
     order = ["item"] + middle + ["make"]
-
-    # A standalone Windows Key is special: the popup chooses ONLY the
-    # headings. The actual Excel data always remains OS -> operating_system
-    # and product key -> win_key. This prevents the two values from being
-    # accidentally duplicated into both sets of columns.
-    heading_mode = item.get("_windows_heading_mode")
-    is_windows_standalone = bool(item.get("_windows_standalone"))
-
     fields = []
+
     for key in order:
-        if key not in FIELD_DEFINITIONS:
+        definition = FIELD_DEFINITIONS.get(key)
+        if not definition:
             continue
 
-        heading_key, setting_key = FIELD_DEFINITIONS[key]
-
+        heading_key, setting_key = definition
         if key == "item":
             heading = "ITEM"
-            value = valid_value(item.get("item"))
         elif key == "make":
             heading = "MAKE"
-            value = valid_value(item.get("make"))
         else:
-            # Standalone Windows Key: popup selection has absolute priority.
-            if is_windows_standalone and heading_mode == "model_serial":
-                if key == "model_no":
-                    heading = "MODEL NO"
-                    value = valid_value(item.get("operating_system"))
-                elif key == "serial_no":
-                    heading = "SERIAL NO"
-                    value = valid_value(item.get("win_key"))
-                elif key in ("operating_system", "win_key"):
-                    continue
-                else:
-                    # Keep other optional fields (e.g. MAC) if they contain data.
-                    heading = settings.get(heading_key, key.upper())
-                    value = valid_value(item.get(key))
-
-                if value:
-                    fields.append((heading, value))
-                continue
-
-            if is_windows_standalone and heading_mode == "os_win":
-                if key in ("model_no", "serial_no"):
-                    continue
-                if key == "operating_system":
-                    heading = "OPERATING SYSTEM"
-                    value = valid_value(item.get("operating_system"))
-                elif key == "win_key":
-                    heading = "WINDOW KEY"
-                    value = valid_value(item.get("win_key"))
-                else:
-                    heading = settings.get(heading_key, key.upper())
-                    value = valid_value(item.get(key))
-
-                if value:
-                    fields.append((heading, value))
-                continue
-
-            # Normal certificates, including IPC rows that already contain
-            # model + serial + OS + Windows key: show all available fields.
             heading = settings.get(heading_key, key.upper())
             if setting_key and not settings.get(setting_key, True):
                 continue
@@ -944,8 +937,8 @@ def table_fields(item, settings):
                     continue
                 if key in ("operating_system", "win_key") and item.get("_popup_show_os_win") is False:
                     continue
-            value = valid_value(item.get(key))
 
+        value = valid_value(item.get(key))
         if value:
             fields.append((heading, value))
 
@@ -1781,31 +1774,43 @@ if st.session_state.page == "M-SMART PDF":
                         st.code(detected_item.get("win_key", ""))
 
                     st.markdown("### Select table heading")
-                    heading_mode = st.radio(
-                        "Which heading do you want in this certificate?",
-                        options=["model_serial", "os_win"],
-                        format_func=lambda x: (
-                            "MODEL NO / SERIAL NO"
-                            if x == "model_serial"
-                            else "OPERATING SYSTEM / WINDOW KEY"
-                        ),
-                        index=0,
-                        key=f"popup_heading_mode_{idx}",
+                    st.caption(
+                        "Choose ONE option. The Excel values are not changed: "
+                        "Operating System stays as OS data and the Windows key stays as the key. "
+                        "Only the certificate heading changes."
                     )
 
-                    if st.button(
-                        "APPLY TABLE HEADING",
-                        type="primary",
-                        use_container_width=True,
-                    ):
-                        st.session_state.windows_decisions[idx] = {
-                            "keep_key": True,
-                            "heading_mode": heading_mode,
-                            "show_model_serial": heading_mode == "model_serial",
-                            "show_os_win": heading_mode == "os_win",
-                        }
-                        st.session_state.windows_queue.pop(0)
-                        st.rerun()
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        if st.button(
+                            "MODEL NO / SERIAL NO",
+                            type="primary",
+                            use_container_width=True,
+                            key=f"popup_model_serial_btn_{idx}",
+                        ):
+                            st.session_state.windows_decisions[idx] = {
+                                "keep_key": True,
+                                "heading_mode": "model_serial",
+                                "show_model_serial": True,
+                                "show_os_win": False,
+                            }
+                            st.session_state.windows_queue.pop(0)
+                            st.rerun()
+
+                    with c2:
+                        if st.button(
+                            "OPERATING SYSTEM / WINDOW KEY",
+                            use_container_width=True,
+                            key=f"popup_os_win_btn_{idx}",
+                        ):
+                            st.session_state.windows_decisions[idx] = {
+                                "keep_key": True,
+                                "heading_mode": "os_win",
+                                "show_model_serial": False,
+                                "show_os_win": True,
+                            }
+                            st.session_state.windows_queue.pop(0)
+                            st.rerun()
 
                 windows_key_dialog()
 
