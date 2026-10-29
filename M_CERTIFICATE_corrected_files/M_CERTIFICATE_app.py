@@ -678,6 +678,29 @@ def intro_labels(item, settings):
     return labels
 
 
+def apply_table_grid_borders(table):
+    """Apply visible grid borders without relying on a named Word table style."""
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
+
+    tbl_pr = table._tbl.tblPr
+    borders = tbl_pr.find(qn("w:tblBorders"))
+    if borders is None:
+        borders = OxmlElement("w:tblBorders")
+        tbl_pr.append(borders)
+
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        tag = qn(f"w:{edge}")
+        element = borders.find(tag)
+        if element is None:
+            element = OxmlElement(f"w:{edge}")
+            borders.append(element)
+        element.set(qn("w:val"), "single")
+        element.set(qn("w:sz"), "6")
+        element.set(qn("w:space"), "0")
+        element.set(qn("w:color"), "000000")
+
+
 def build_intro(item, settings):
     item_name = valid_value(item.get("item")) or "TEMP"
     labels = intro_labels(item, settings)
@@ -1401,7 +1424,14 @@ def create_word(data, settings):
                 cols=len(fields),
             )
 
-            table.style = "Table Grid"
+            # Uploaded Word templates may not contain the built-in "Table Grid" style.
+            # Try the named style when available, then apply borders directly as a fallback.
+            try:
+                if "Table Grid" in [style.name for style in doc.styles]:
+                    table.style = "Table Grid"
+            except (KeyError, ValueError, TypeError):
+                pass
+            apply_table_grid_borders(table)
             table.alignment = WD_TABLE_ALIGNMENT.CENTER
 
             for col_index, (heading, value) in enumerate(fields):
