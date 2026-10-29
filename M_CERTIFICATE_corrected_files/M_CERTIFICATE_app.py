@@ -2207,7 +2207,7 @@ elif st.session_state.page == "PAGE SETTINGS":
             "Left / Right Content Margin (mm)",
             min_value=5.0,
             max_value=50.0,
-            value=float(settings.get("left_right_margin_mm", 17)),
+            value=float(settings.get("left_right_margin_mm", 25)),
             step=1.0,
             key="settings_side_margin_mm",
         )
