@@ -2080,7 +2080,7 @@ elif st.session_state.page == "M-CERTIFICATE":
 
             mac = st.text_input("MAC ID")
             operating_system = st.text_input("Operating System")
-            win_key = st.text_input("WIN KEY")
+            win_key = st.text_input("Window Key")
 
         st.caption(
             "Model No, Serial No, Make, MAC ID, and WIN KEY are optional."
