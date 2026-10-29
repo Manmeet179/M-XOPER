@@ -1669,10 +1669,41 @@ if st.session_state.page == "M-SMART PDF":
             cert_date = parsed_files[0]["date"]
             parsed = {"company": company, "date": cert_date, "items": all_items}
 
-            # Create a warning queue for every imported Windows key.
+            # Windows certificates that already contain the complete
+            # certificate table data do NOT need a popup.  They are used
+            # automatically as: ITEM | MODEL NO | SERIAL NO |
+            # OPERATING SYSTEM | WINDOW KEY | MAKE.
+            #
+            # Only incomplete/different Windows records go through the
+            # small table-heading popup below.
             if not st.session_state.get("windows_queue"):
                 for idx, item in enumerate(all_items):
-                    if item.get("_windows_detected") and idx not in st.session_state.get("windows_decisions", {}):
+                    if not item.get("_windows_detected"):
+                        continue
+                    if idx in st.session_state.get("windows_decisions", {}):
+                        continue
+
+                    has_model = bool(valid_value(item.get("model_no")))
+                    has_serial = bool(valid_value(item.get("serial_no")))
+                    has_os = bool(valid_value(item.get("operating_system")))
+                    has_win = bool(valid_value(item.get("win_key")))
+                    has_make = bool(valid_value(item.get("make")))
+
+                    complete_windows_table = all((
+                        has_model, has_serial, has_os, has_win, has_make
+                    ))
+
+                    if complete_windows_table:
+                        # Already exactly in the desired certificate format.
+                        item["_popup_show_model_serial"] = True
+                        item["_popup_show_os_win"] = True
+                        item["_windows_auto_table"] = True
+                        st.session_state.windows_decisions[idx] = {
+                            "keep_key": True,
+                            "show_model_serial": True,
+                            "show_os_win": True,
+                        }
+                    else:
                         st.session_state.windows_queue.append(idx)
 
             total_certificates = sum(max(1, int(item.get("qty", 1))) for item in all_items)
@@ -1687,49 +1718,55 @@ if st.session_state.page == "M-SMART PDF":
                 idx = queue[0]
                 detected_item = all_items[idx]
 
-                @st.dialog("Windows Key Detected")
+                @st.dialog("Windows Key — Table Heading")
                 def windows_key_dialog():
-                    st.warning(f"Sr No {idx + 1} in this data having Windows key?")
+                    st.warning(
+                        f"Sr No {idx + 1} has Windows data. Select which headings "
+                        "you want in this certificate table."
+                    )
                     st.write(f"**Item:** {detected_item.get('item', '')}")
+
                     if detected_item.get("model_no"):
                         st.write(f"**Model No:** {detected_item.get('model_no')}")
                     if detected_item.get("serial_no"):
                         st.write(f"**Serial No:** {detected_item.get('serial_no')}")
                     if detected_item.get("operating_system"):
                         st.write(f"**Operating System:** {detected_item.get('operating_system')}")
-                    st.code(detected_item.get("win_key", ""))
+                    if detected_item.get("win_key"):
+                        st.code(detected_item.get("win_key", ""))
 
-                    st.markdown("### Certificate table options")
+                    st.markdown("### Table heading options")
                     keep_model_serial = st.checkbox(
-                        "Do you want Model No Serial No in table?",
-                        value=bool(detected_item.get("model_no") or detected_item.get("serial_no")),
+                        "Do you want Model No / Serial No in table?",
+                        value=bool(
+                            detected_item.get("model_no")
+                            or detected_item.get("serial_no")
+                            or detected_item.get("operating_system")
+                            or detected_item.get("win_key")
+                        ),
                         key=f"popup_model_serial_{idx}",
                     )
                     keep_os_win = st.checkbox(
-                        "Do you want Operating system and Window key in table?",
-                        value=bool(detected_item.get("operating_system") or detected_item.get("win_key")),
+                        "Do you want Operating System / Window Key in table?",
+                        value=bool(
+                            detected_item.get("operating_system")
+                            or detected_item.get("win_key")
+                        ),
                         key=f"popup_os_win_{idx}",
                     )
 
-                    c1, c2 = st.columns(2)
-                    with c1:
-                        if st.button("YES — KEEP KEY", type="primary", use_container_width=True):
-                            st.session_state.windows_decisions[idx] = {
-                                "keep_key": True,
-                                "show_model_serial": keep_model_serial,
-                                "show_os_win": keep_os_win,
-                            }
-                            st.session_state.windows_queue.pop(0)
-                            st.rerun()
-                    with c2:
-                        if st.button("NO — REMOVE KEY", use_container_width=True):
-                            st.session_state.windows_decisions[idx] = {
-                                "keep_key": False,
-                                "show_model_serial": keep_model_serial,
-                                "show_os_win": keep_os_win,
-                            }
-                            st.session_state.windows_queue.pop(0)
-                            st.rerun()
+                    if st.button(
+                        "APPLY TABLE HEADINGS",
+                        type="primary",
+                        use_container_width=True,
+                    ):
+                        st.session_state.windows_decisions[idx] = {
+                            "keep_key": True,
+                            "show_model_serial": keep_model_serial,
+                            "show_os_win": keep_os_win,
+                        }
+                        st.session_state.windows_queue.pop(0)
+                        st.rerun()
 
                 windows_key_dialog()
 
