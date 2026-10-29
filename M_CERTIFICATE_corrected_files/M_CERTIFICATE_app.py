@@ -736,11 +736,26 @@ def read_excel(uploaded_file):
             "WINDOWS KEY", "WINDOW KEY", "WINDOWS PRODUCT KEY",
             "WINDOWS LICENSE KEY", "WINDOWS LICENCE KEY",
         }
+        same_item_windows_continuation = (
+            not is_standalone_windows_key_item
+            and previous_item is not None
+            and name
+            and valid_value(previous_item.get("item")).strip().upper() == row_name_upper.strip()
+            and bool(detected_key)
+            and (
+                is_operating_system_text(model)
+                or is_operating_system_text(name)
+                or is_operating_system_text(operating_system)
+                or is_operating_system_text(serial)
+            )
+        )
+
         is_windows_continuation = (
             not is_standalone_windows_key_item
             and (
                 row_name_upper.startswith("WIN ")
                 or row_name_upper.startswith("WINDOWS ")
+                or same_item_windows_continuation
             )
             and bool(detected_key or operating_system or model or serial)
         )
@@ -878,6 +893,11 @@ def table_fields(item, settings):
             heading = settings.get(heading_key, key.upper())
             if setting_key and not settings.get(setting_key, True):
                 continue
+            if item.get("_windows_detected"):
+                if key in ("model_no", "serial_no") and item.get("_popup_show_model_serial") is False:
+                    continue
+                if key in ("operating_system", "win_key") and item.get("_popup_show_os_win") is False:
+                    continue
         value = valid_value(item.get(key))
         if value:
             fields.append((heading, value))
@@ -1655,31 +1675,66 @@ if st.session_state.page == "M-SMART PDF":
 
                 @st.dialog("Windows Key Detected")
                 def windows_key_dialog():
-                    st.warning(
-                        f"Sr No {idx + 1} in this data having Windows key?"
-                    )
+                    st.warning(f"Sr No {idx + 1} in this data having Windows key?")
                     st.write(f"**Item:** {detected_item.get('item', '')}")
+                    if detected_item.get("model_no"):
+                        st.write(f"**Model No:** {detected_item.get('model_no')}")
+                    if detected_item.get("serial_no"):
+                        st.write(f"**Serial No:** {detected_item.get('serial_no')}")
                     if detected_item.get("operating_system"):
                         st.write(f"**Operating System:** {detected_item.get('operating_system')}")
                     st.code(detected_item.get("win_key", ""))
+
+                    st.markdown("### Certificate table options")
+                    keep_model_serial = st.checkbox(
+                        "Do you want Model No Serial No in table?",
+                        value=bool(detected_item.get("model_no") or detected_item.get("serial_no")),
+                        key=f"popup_model_serial_{idx}",
+                    )
+                    keep_os_win = st.checkbox(
+                        "Do you want Operating system and Window key in table?",
+                        value=bool(detected_item.get("operating_system") or detected_item.get("win_key")),
+                        key=f"popup_os_win_{idx}",
+                    )
+
                     c1, c2 = st.columns(2)
                     with c1:
-                        if st.button("YES — KEEP", type="primary", use_container_width=True):
-                            st.session_state.windows_decisions[idx] = True
+                        if st.button("YES — KEEP KEY", type="primary", use_container_width=True):
+                            st.session_state.windows_decisions[idx] = {
+                                "keep_key": True,
+                                "show_model_serial": keep_model_serial,
+                                "show_os_win": keep_os_win,
+                            }
                             st.session_state.windows_queue.pop(0)
                             st.rerun()
                     with c2:
-                        if st.button("NO — REMOVE", use_container_width=True):
-                            st.session_state.windows_decisions[idx] = False
+                        if st.button("NO — REMOVE KEY", use_container_width=True):
+                            st.session_state.windows_decisions[idx] = {
+                                "keep_key": False,
+                                "show_model_serial": keep_model_serial,
+                                "show_os_win": keep_os_win,
+                            }
                             st.session_state.windows_queue.pop(0)
                             st.rerun()
 
                 windows_key_dialog()
 
-            # Apply YES/NO decisions before showing the editable grid.
-            for decision_idx, keep_key in st.session_state.get("windows_decisions", {}).items():
-                if 0 <= decision_idx < len(all_items) and not keep_key:
-                    all_items[decision_idx]["win_key"] = ""
+            # Apply Windows popup decisions before showing the editable grid.
+            for decision_idx, decision in st.session_state.get("windows_decisions", {}).items():
+                if 0 <= decision_idx < len(all_items):
+                    item = all_items[decision_idx]
+                    if isinstance(decision, bool):
+                        keep_key = decision
+                        show_model_serial = True
+                        show_os_win = True
+                    else:
+                        keep_key = bool(decision.get("keep_key", True))
+                        show_model_serial = bool(decision.get("show_model_serial", True))
+                        show_os_win = bool(decision.get("show_os_win", True))
+                    if not keep_key:
+                        item["win_key"] = ""
+                    item["_popup_show_model_serial"] = show_model_serial
+                    item["_popup_show_os_win"] = show_os_win
 
             st.subheader("Excel Data Preview — Editable")
             editor_rows = []
@@ -1738,8 +1793,13 @@ if st.session_state.page == "M-SMART PDF":
                         original["qty"] = max(1, int(row.get("Qty", 1) or 1))
                     except (TypeError, ValueError):
                         original["qty"] = 1
-                    original.pop("_windows_detected", None)
-                    original.pop("_windows_source_row", None)
+                    if all_items[idx].get("_windows_detected"):
+                        original["_windows_detected"] = True
+                        original["_popup_show_model_serial"] = all_items[idx].get("_popup_show_model_serial", True)
+                        original["_popup_show_os_win"] = all_items[idx].get("_popup_show_os_win", True)
+                    else:
+                        original.pop("_windows_detected", None)
+                        original.pop("_windows_source_row", None)
                     updated_items.append(original)
 
                 parsed["items"] = updated_items
