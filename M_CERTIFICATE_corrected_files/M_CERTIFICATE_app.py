@@ -38,7 +38,7 @@ DEFAULTS = {
     "company": "OptoPixel Pvt. Ltd.",
     "paper_type": "Letterhead",
     "top_spacing_mm": 10,
-    "left_right_margin_mm": 17,
+    "left_right_margin_mm": 25,
     "bottom_margin_mm": 15,
     "show_make": True,
     "show_model": True,
@@ -1007,7 +1007,7 @@ def draw_certificate_page(pdf, item, company, cert_date, settings):
     # The generated PDF remains true A4.
     mm = 72 / 25.4
     top_margin = max(0, float(settings.get("top_spacing_mm", 10))) * mm
-    side_margin = max(5, float(settings.get("left_right_margin_mm", 17))) * mm
+    side_margin = max(5, float(settings.get("left_right_margin_mm", 25))) * mm
     bottom_margin = max(5, float(settings.get("bottom_margin_mm", 15))) * mm
 
     pdf.translate(0, -top_margin)
