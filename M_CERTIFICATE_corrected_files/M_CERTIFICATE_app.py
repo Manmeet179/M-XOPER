@@ -763,12 +763,6 @@ def read_excel(uploaded_file):
             and name
             and valid_value(previous_item.get("item")).strip().upper() == row_name_upper.strip()
             and bool(detected_key)
-            and (
-                is_operating_system_text(model)
-                or is_operating_system_text(name)
-                or is_operating_system_text(operating_system)
-                or is_operating_system_text(serial)
-            )
         )
 
         is_windows_continuation = (
@@ -859,6 +853,12 @@ def read_excel(uploaded_file):
             "_windows_detected": bool(win_key),
             "_windows_source_row": row if win_key else None,
             "_windows_standalone": bool(is_standalone_windows_key_item),
+            # Ask Yes/No only when a 5x5 key is found directly on a normal
+            # item's own row (with model/serial data). Continuation rows such
+            # as OS + key beneath IPC are attached to IPC without this popup.
+            "_windows_key_confirm_required": bool(
+                detected_key and not is_standalone_windows_key_item and (model or serial)
+            ),
         }
 
         items.append(item)
@@ -896,47 +896,26 @@ DEFAULT_TABLE_ORDER = ["item", "model_no", "serial_no", "operating_system", "win
 
 
 def table_fields(item, settings):
-    # If a Windows key belongs to a normal item and there is no separate OS
-    # value, keep the certificate table compact and in the requested order.
+    # A Windows key on a normal item (for example IPC) always stays on that
+    # item's ONE certificate. Build its columns in a fixed order and always
+    # keep MAKE as the final column. OS is included only when present.
     if (
         item.get("_windows_detected")
         and not item.get("_windows_standalone")
         and valid_value(item.get("win_key"))
-        and not valid_value(item.get("operating_system"))
     ):
         fields = [("ITEM", valid_value(item.get("item")))]
         for heading, key in (
-            ("MAKE", "make"),
             ("MODEL NO", "model_no"),
             ("SERIAL NO", "serial_no"),
+            ("OPERATING SYSTEM", "operating_system"),
             ("WINDOWS KEY", "win_key"),
+            ("MAKE", "make"),
         ):
             value = valid_value(item.get(key))
             if value:
                 fields.append((heading, value))
         return fields
-
-    # CASE 1: the normal item (for example IPC) already contains its real
-    # MODEL NO + SERIAL NO + OPERATING SYSTEM + WINDOW KEY + MAKE.
-    # For this case the certificate must ALWAYS use all five data fields.
-    # Do not let old/global Page Settings hide MODEL or SERIAL.
-    if (
-        item.get("_windows_detected")
-        and not item.get("_windows_standalone")
-        and valid_value(item.get("model_no"))
-        and valid_value(item.get("serial_no"))
-        and valid_value(item.get("operating_system"))
-        and valid_value(item.get("win_key"))
-        and valid_value(item.get("make"))
-    ):
-        return [
-            ("ITEM", valid_value(item.get("item"))),
-            ("MODEL NO", valid_value(item.get("model_no"))),
-            ("SERIAL NO", valid_value(item.get("serial_no"))),
-            ("OPERATING SYSTEM", valid_value(item.get("operating_system"))),
-            ("WINDOW KEY", valid_value(item.get("win_key"))),
-            ("MAKE", valid_value(item.get("make"))),
-        ]
 
     # ITEM is always first and MAKE is always last.
     # Standalone Windows Key certificates are special: the popup controls
@@ -1797,14 +1776,25 @@ if st.session_state.page == "M-SMART PDF":
             confirmations = st.session_state.get("windows_key_confirmations", {})
             for key_idx, candidate in enumerate(all_items):
                 candidate_key = valid_value(candidate.get("win_key"))
+                # A normal item with a key on its own model/serial row gets
+                # Yes/No confirmation. OS/key continuation rows attached to a
+                # preceding item, and standalone Windows Key rows, use their
+                # dedicated handling instead.
+                if not candidate.get("_windows_key_confirm_required"):
+                    continue
                 if not candidate_key or not WINDOWS_KEY_RE.fullmatch(candidate_key):
                     continue
                 if key_idx in confirmations:
                     answer = confirmations[key_idx]
                     if answer is False:
-                        candidate["serial_no"] = candidate_key
+                        existing_serial = valid_value(candidate.get("serial_no"))
+                        candidate["serial_no"] = (
+                            candidate_key if not existing_serial else f"{existing_serial} / {candidate_key}"
+                        )
                         candidate["win_key"] = ""
                         candidate["_windows_detected"] = False
+                    else:
+                        candidate["_windows_detected"] = True
                     continue
 
                 if hasattr(st, "dialog"):
@@ -1852,7 +1842,10 @@ if st.session_state.page == "M-SMART PDF":
 
                     # CASE 1: IPC (or another normal item) already contains
                     # model + serial + OS + Windows key + make. Never ask.
-                    if (not item.get("_windows_standalone")) and complete_windows_table:
+                    if not item.get("_windows_standalone"):
+                        # A Windows key belonging to a normal item (IPC, etc.)
+                        # is just one extra column on that item's certificate.
+                        # Never queue a popup or create a second certificate.
                         item["_popup_show_model_serial"] = True
                         item["_popup_show_os_win"] = True
                         item["_windows_auto_table"] = True
@@ -1864,8 +1857,8 @@ if st.session_state.page == "M-SMART PDF":
                             "heading_mode": "auto",
                         }
                     else:
-                        # CASE 2: a separate Windows Key certificate always
-                        # asks which pair of headings should be used.
+                        # Only a separately-defined Windows Key item gets
+                        # the heading-choice popup.
                         st.session_state.windows_queue.append(idx)
 
             total_certificates = sum(max(1, int(item.get("qty", 1))) for item in all_items)
