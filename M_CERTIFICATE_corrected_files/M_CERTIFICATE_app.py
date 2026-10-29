@@ -898,7 +898,21 @@ def table_fields(item, settings):
                     continue
                 if key in ("operating_system", "win_key") and item.get("_popup_show_os_win") is False:
                     continue
-        value = valid_value(item.get(key))
+        # For a Windows-detected certificate, the popup option
+        # "Model No Serial No" means: put the detected Operating System
+        # into MODEL NO and the detected Windows Key into SERIAL NO.
+        # The original values remain in the item so the second popup option
+        # can still independently control the OS / Windows Key columns.
+        if item.get("_windows_detected") and item.get("_popup_show_model_serial") is True:
+            if key == "model_no":
+                value = valid_value(item.get("operating_system"))
+            elif key == "serial_no":
+                value = valid_value(item.get("win_key"))
+            else:
+                value = valid_value(item.get(key))
+        else:
+            value = valid_value(item.get(key))
+
         if value:
             fields.append((heading, value))
     return fields
@@ -2026,18 +2040,19 @@ elif st.session_state.page == "PAGE SETTINGS":
     st.header("PAGE SETTINGS")
 
     st.info(
-        "Settings are saved for the current Streamlit session. "
-        "Permanent storage after an app restart is not guaranteed."
+        "Certificate settings are fixed by the application. "
+        "Only the administrator background logo setting is available here."
     )
 
-    settings = st.session_state.smart_settings
-
+    # --------------------------------------------------------
+    # ADMIN — BACKGROUND LOGO ONLY
+    # --------------------------------------------------------
     if st.session_state.get("is_admin", False):
         st.subheader("BACKGROUND LOGO — ADMIN ONLY")
 
         st.caption(
-            "The letterhead background image will be stored privately "
-            "in the Aiven PostgreSQL database."
+            "Upload or replace the private A4 letterhead/background image. "
+            "The image is stored in the Aiven PostgreSQL database."
         )
 
         uploaded_bg = st.file_uploader(
@@ -2066,7 +2081,6 @@ elif st.session_state.page == "PAGE SETTINGS":
                     st.success(
                         "Background image saved successfully to the Aiven database."
                     )
-
                 except Exception as exc:
                     st.error(f"Image save failed: {exc}")
 
@@ -2084,144 +2098,11 @@ elif st.session_state.page == "PAGE SETTINGS":
                         use_container_width=True,
                     )
                 else:
-                    st.warning(
-                        "No background image has been uploaded yet."
-                    )
-
+                    st.warning("No background image has been uploaded yet.")
             except Exception as exc:
                 st.error(f"Database read failed: {exc}")
-
-        st.divider()
-
-    with st.form("settings_form"):
-        left, right = st.columns(2)
-
-        with left:
-            date_format = st.selectbox(
-                "Date Format", list(DATE_FORMATS),
-                index=list(DATE_FORMATS).index(settings["date_format"]),
-            )
-            paper_type = st.selectbox(
-                "Paper Type", ["Letterhead", "Blank paper"],
-                index=["Letterhead", "Blank paper"].index(settings["paper_type"]),
-            )
-            top_spacing = st.number_input(
-                "Content Top Spacing (mm)", min_value=0, max_value=60,
-                value=int(settings["top_spacing_mm"]), step=1,
-            )
-            issuing_company = st.text_input("Certificate Issued By", value=settings["company"])
-
-        with right:
-            make_heading = st.text_input("Make Heading", value=settings["make_heading"])
-            model_heading = st.text_input("Model Heading", value=settings["model_heading"])
-            serial_heading = st.text_input("Serial Heading", value=settings["serial_heading"])
-            mac_heading = st.text_input("MAC Heading", value=settings["mac_heading"])
-            os_heading = st.text_input("Operating System Heading", value=settings.get("operating_system_heading", "OPERATING SYSTEM"))
-            win_heading = st.text_input("WINDOW KEY Heading", value=settings.get("win_heading", "WINDOW KEY"))
-
-        st.subheader("Optional Table Columns")
-        a, b, c, d, e, f = st.columns(6)
-        with a:
-            show_make = st.checkbox("Show Make", value=settings["show_make"])
-        with b:
-            show_model = st.checkbox("Show Model No", value=settings["show_model"])
-        with c:
-            show_serial = st.checkbox("Show Serial No", value=settings["show_serial"])
-        with d:
-            show_mac = st.checkbox("Show MAC ID", value=settings["show_mac"])
-        with e:
-            show_os = st.checkbox("Show Operating System", value=settings.get("show_operating_system", True))
-        with f:
-            show_win = st.checkbox("Show WINDOW KEY", value=settings["show_win"])
-
-        st.subheader("Table Heading Order")
-        st.caption("ITEM is always first. MAKE is always last. Set the order of the other columns here.")
-        order_options = [
-            ("model_no", "MODEL NO"),
-            ("serial_no", "SERIAL NO"),
-            ("mac", "MAC ID"),
-            ("operating_system", "OPERATING SYSTEM"),
-            ("win_key", "WINDOW KEY"),
-        ]
-        option_keys = [x[0] for x in order_options]
-        option_labels = dict(order_options)
-        current_order = [
-            x for x in settings.get("table_order", DEFAULT_TABLE_ORDER)
-            if x not in ("item", "make") and x in option_keys
-        ]
-        for key in option_keys:
-            if key not in current_order:
-                current_order.append(key)
-
-        position_cols = st.columns(5)
-        selected_order = []
-        for pos, col in enumerate(position_cols):
-            with col:
-                current = current_order[pos]
-                choices = [k for k in option_keys if k not in selected_order]
-                idx = choices.index(current) if current in choices else 0
-                chosen = st.selectbox(
-                    f"Position {pos + 2}", choices,
-                    index=idx,
-                    format_func=lambda x: option_labels[x],
-                    key=f"table_order_pos_{pos}",
-                )
-                selected_order.append(chosen)
-
-        st.subheader("Introduction Line — Independent Settings")
-        st.caption("These settings control only the sentence above the table, not table columns.")
-        i1, i2, i3, i4, i5, i6 = st.columns(6)
-        with i1:
-            intro_model = st.checkbox("Model No", value=settings.get("intro_model", True))
-        with i2:
-            intro_serial = st.checkbox("Serial No", value=settings.get("intro_serial", True))
-        with i3:
-            intro_mac = st.checkbox("MAC ID", value=settings.get("intro_mac", False))
-        with i4:
-            intro_make = st.checkbox("Make", value=settings.get("intro_make", False))
-        with i5:
-            intro_os = st.checkbox("Operating System", value=settings.get("intro_operating_system", False))
-        with i6:
-            intro_win = st.checkbox("WINDOW KEY", value=settings.get("intro_win", False))
-
-        save_settings = st.form_submit_button("SAVE SETTINGS", type="primary", use_container_width=True)
-
-    if save_settings:
-        st.session_state.smart_settings.update({
-            "date_format": date_format,
-            "paper_type": paper_type,
-            "top_spacing_mm": int(top_spacing),
-            "company": issuing_company.strip() or DEFAULTS["company"],
-            "make_heading": make_heading.strip() or "MAKE",
-            "model_heading": model_heading.strip() or "MODEL NO",
-            "serial_heading": serial_heading.strip() or "SERIAL NO",
-            "mac_heading": mac_heading.strip() or "MAC ID",
-            "operating_system_heading": os_heading.strip() or "OPERATING SYSTEM",
-            "win_heading": win_heading.strip() or "WINDOW KEY",
-            "show_make": show_make,
-            "show_model": show_model,
-            "show_serial": show_serial,
-            "show_mac": show_mac,
-            "show_operating_system": show_os,
-            "show_win": show_win,
-            "table_order": ["item"] + selected_order + ["make"],
-            "intro_model": intro_model,
-            "intro_serial": intro_serial,
-            "intro_mac": intro_mac,
-            "intro_make": intro_make,
-            "intro_operating_system": intro_os,
-            "intro_win": intro_win,
-        })
-        st.session_state.smart_generated = None
-        st.session_state.manual_generated = None
-        st.success("Settings saved for this session.")
-        st.rerun()
-
-    if st.button("RESTORE DEFAULT SETTINGS"):
-        st.session_state.smart_settings = DEFAULTS.copy()
-        st.session_state.smart_generated = None
-        st.session_state.manual_generated = None
-        st.rerun()
+    else:
+        st.warning("Administrator login is required to manage the background logo.")
 
 
 # ============================================================
