@@ -268,6 +268,67 @@ def get_bg_logo():
     return bytes(row[0]), row[1]
 
 
+@st.cache_data(ttl=60)
+def get_word_template():
+    """Return the administrator-uploaded DOCX letterhead template, if any."""
+    init_logo_table()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT content, mime_type FROM private_assets WHERE name = %s",
+                ("certificate_word_template",),
+            )
+            row = cur.fetchone()
+    if not row:
+        return None
+    return bytes(row[0]), row[1]
+
+
+def save_word_template(uploaded_file):
+    """Save and validate an administrator-provided DOCX template."""
+    if not st.session_state.get("is_admin", False):
+        raise PermissionError("Administrator login is required.")
+    if not uploaded_file.name.lower().endswith(".docx"):
+        raise ValueError("Upload a Microsoft Word .docx file.")
+    content = uploaded_file.getvalue()
+    if not content:
+        raise ValueError("The uploaded Word file is empty.")
+    try:
+        # Validate that it is a readable Word document before saving it.
+        Document(io.BytesIO(content))
+    except Exception as exc:
+        raise ValueError("This is not a valid .docx Word document.") from exc
+
+    init_logo_table()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO private_assets (name, mime_type, content, updated_at)
+                VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
+                ON CONFLICT (name) DO UPDATE SET
+                    mime_type = EXCLUDED.mime_type,
+                    content = EXCLUDED.content,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                ("certificate_word_template",
+                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                 psycopg2.Binary(content)),
+            )
+    get_word_template.clear()
+
+
+def delete_word_template():
+    """Remove the uploaded Word template so Word output uses the default layout."""
+    if not st.session_state.get("is_admin", False):
+        raise PermissionError("Administrator login is required.")
+    init_logo_table()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM private_assets WHERE name = %s", ("certificate_word_template",))
+    get_word_template.clear()
+
+
 def save_bg_logo(uploaded_file):
     if not st.session_state.get("is_admin", False):
         raise PermissionError("Administrator login is required.")
@@ -1244,20 +1305,33 @@ def create_pdf(data, settings):
 # ============================================================
 
 def create_word(data, settings):
-    doc = Document()
+    # If the administrator uploaded a DOCX letterhead/template, use it as the
+    # base document so its header, logo, footer, page setup and artwork remain
+    # exactly as authored in Word. Certificate body content is regenerated below.
+    word_template = get_word_template()
+    using_word_template = bool(word_template)
+    if word_template:
+        doc = Document(io.BytesIO(word_template[0]))
+        # Clear template body content while preserving section properties,
+        # headers, footers, and other template artwork.
+        body = doc._element.body
+        for child in list(body):
+            if child.tag.endswith('}sectPr'):
+                continue
+            body.remove(child)
+        section = doc.sections[0]
+    else:
+        doc = Document()
+        section = doc.sections[0]
+        section.page_width = Inches(8.27)
+        section.page_height = Inches(11.69)
+        section.top_margin = Inches(0.8)
+        section.bottom_margin = Inches(0.7)
+        section.left_margin = Inches(0.55)
+        section.right_margin = Inches(0.55)
 
-    section = doc.sections[0]
-    section.page_width = Inches(8.27)
-    section.page_height = Inches(11.69)
-
-    section.top_margin = Inches(0.8)
-    section.bottom_margin = Inches(0.7)
-    section.left_margin = Inches(0.55)
-    section.right_margin = Inches(0.55)
-
-    # Reuse the same saved letterhead artwork as the PDF. It is placed in the
-    # Word header, so the exported DOCX carries the uploaded design/logo too.
-    if settings.get("paper_type") == "Letterhead":
+    # Without a DOCX template, reuse the same saved letterhead artwork as PDF.
+    if not using_word_template and settings.get("paper_type") == "Letterhead":
         try:
             logo_record = get_bg_logo()
             if logo_record:
@@ -2490,6 +2564,52 @@ elif st.session_state.page == "PAGE SETTINGS":
                     st.warning("No background image has been uploaded yet.")
             except Exception as exc:
                 st.error(f"Database read failed: {exc}")
+
+        st.divider()
+        st.subheader("WORD LETTERHEAD / TEMPLATE — ADMIN ONLY")
+        st.caption(
+            "Upload a .docx Word file that already contains your exact logo/letterhead. "
+            "The app keeps its header, footer and page setup, then inserts the generated certificate content."
+        )
+        uploaded_word_template = st.file_uploader(
+            "Upload Word Template (.docx)",
+            type=["docx"],
+            key="admin_word_template_upload",
+        )
+        if uploaded_word_template is not None:
+            st.info(f"Selected template: {uploaded_word_template.name}")
+            if st.button(
+                "SAVE WORD TEMPLATE TO AIVEN",
+                type="primary",
+                use_container_width=True,
+                key="save_word_template_button",
+            ):
+                try:
+                    save_word_template(uploaded_word_template)
+                    st.success("Word template saved. Generate certificates again to apply it.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Word template save failed: {exc}")
+
+        col_template_a, col_template_b = st.columns(2)
+        with col_template_a:
+            if st.button("CHECK SAVED WORD TEMPLATE", key="check_saved_word_template", use_container_width=True):
+                try:
+                    saved_template = get_word_template()
+                    if saved_template:
+                        st.success("A Word template is saved and will be used for generated Word files.")
+                    else:
+                        st.warning("No Word template is saved. Word output will use the default layout / saved background logo.")
+                except Exception as exc:
+                    st.error(f"Word template check failed: {exc}")
+        with col_template_b:
+            if st.button("REMOVE WORD TEMPLATE", key="remove_saved_word_template", use_container_width=True):
+                try:
+                    delete_word_template()
+                    st.success("Word template removed. Default Word layout will be used.")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(f"Could not remove Word template: {exc}")
     else:
         st.warning("Administrator login is required to manage the background logo.")
 
