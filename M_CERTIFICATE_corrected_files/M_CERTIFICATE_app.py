@@ -898,20 +898,12 @@ def table_fields(item, settings):
                     continue
                 if key in ("operating_system", "win_key") and item.get("_popup_show_os_win") is False:
                     continue
-        # For a Windows-detected certificate, the popup option
-        # "Model No Serial No" means: put the detected Operating System
-        # into MODEL NO and the detected Windows Key into SERIAL NO.
-        # The original values remain in the item so the second popup option
-        # can still independently control the OS / Windows Key columns.
-        if item.get("_windows_detected") and item.get("_popup_show_model_serial") is True:
-            if key == "model_no":
-                value = valid_value(item.get("operating_system"))
-            elif key == "serial_no":
-                value = valid_value(item.get("win_key"))
-            else:
-                value = valid_value(item.get(key))
-        else:
-            value = valid_value(item.get(key))
+        # IMPORTANT: never remap Windows data into Model No / Serial No.
+        # If an IPC (or any other item) already has its real Model No and
+        # Serial No, those values stay in those columns. Operating System
+        # and Windows Key are separate certificate fields. The popup only
+        # controls which headings are displayed; it does not change data.
+        value = valid_value(item.get(key))
 
         if value:
             fields.append((heading, value))
