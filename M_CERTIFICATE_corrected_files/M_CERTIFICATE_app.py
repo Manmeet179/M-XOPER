@@ -1,4 +1,3 @@
-
 import io
 import os
 import re
@@ -45,14 +44,12 @@ DEFAULTS = {
     "show_mac": True,
     "show_win": True,
     "show_operating_system": True,
-    "item_heading": "ITEM",
-    "sold_to_heading": "Sold To",
-    "make_heading": "Make",
-    "model_heading": "Model No.",
-    "serial_heading": "Serial No.",
+    "make_heading": "MAKE",
+    "model_heading": "MODEL NO",
+    "serial_heading": "SERIAL NO",
     "mac_heading": "MAC ID",
-    "win_heading": "Window Key",
-    "operating_system_heading": "Operating System",
+    "win_heading": "WINDOW KEY",
+    "operating_system_heading": "OPERATING SYSTEM",
     "table_order": ["item", "model_no", "serial_no", "operating_system", "win_key", "mac", "make"],
     "intro_model": True,
     "intro_serial": True,
@@ -88,7 +85,6 @@ st.session_state.setdefault("manual_generated", None)
 st.session_state.setdefault("authenticated", False)
 st.session_state.setdefault("is_admin", False)
 st.session_state.setdefault("excel_upload_signature", None)
-st.session_state.setdefault("excel_uploader_version", 0)
 st.session_state.setdefault("windows_queue", [])
 st.session_state.setdefault("windows_decisions", {})
 
@@ -591,14 +587,14 @@ def clean_operating_system(value):
 
 
 def intro_labels(item, settings):
-    """Build natural-language intro labels from Page Settings."""
+    """Build intro labels independently from table visibility/order."""
     candidates = [
-        ("model_no", settings.get("model_heading", "Model No."), "intro_model"),
-        ("serial_no", settings.get("serial_heading", "Serial No."), "intro_serial"),
+        ("model_no", settings.get("model_heading", "MODEL NO"), "intro_model"),
+        ("serial_no", settings.get("serial_heading", "SERIAL NO"), "intro_serial"),
         ("mac", settings.get("mac_heading", "MAC ID"), "intro_mac"),
-        ("make", settings.get("make_heading", "Make"), "intro_make"),
-        ("operating_system", settings.get("operating_system_heading", "Operating System"), "intro_operating_system"),
-        ("win_key", settings.get("win_heading", "Window Key"), "intro_win"),
+        ("make", settings.get("make_heading", "MAKE"), "intro_make"),
+        ("operating_system", settings.get("operating_system_heading", "OPERATING SYSTEM"), "intro_operating_system"),
+        ("win_key", settings.get("win_heading", "WINDOW KEY"), "intro_win"),
     ]
     labels = []
     for key, heading, setting_key in candidates:
@@ -1148,13 +1144,7 @@ def draw_certificate_page(pdf, item, company, cert_date, settings):
             pdf.drawCentredString(center_x, y, line)
             y -= 11
 
-    # Keep the complete certificate inside the printable A4 area.
-    # Long table values can make the table taller; reserve a safe bottom area
-    # for statement, Sold To and Authorized.
     y = table_bottom - 35
-    bottom_safe = 105
-    if y < bottom_safe + 75:
-        y = bottom_safe + 75
 
     statement = (
         "Specified component is tested for all its functionalities "
@@ -1173,7 +1163,7 @@ def draw_certificate_page(pdf, item, company, cert_date, settings):
     pdf.setFont("Helvetica-Oblique", 10)
 
     sale_statement = (
-        f"{settings.get('sold_to_heading', 'Sold To')}: {company or 'Customer'}."
+        f"The above said item is sold to {company or 'Customer'}."
     )
 
     for line in wrap_text(
@@ -1198,7 +1188,7 @@ def draw_certificate_page(pdf, item, company, cert_date, settings):
 
 def create_pdf(data, settings):
     output = io.BytesIO()
-    pdf = canvas.Canvas(output, pagesize=A4, pageCompression=1)
+    pdf = canvas.Canvas(output, pagesize=A4)
 
     for item in data["items"]:
         copies = max(1, int(item.get("qty", 1)))
@@ -1700,35 +1690,22 @@ if st.session_state.page == "M-SMART PDF":
         "document will be generated for each item."
     )
 
-    uploader_key = f"excel_upload_{st.session_state.get('excel_uploader_version', 0)}"
-
     uploads = st.file_uploader(
-        "Upload Excel File (.xlsx)",
+        "Upload Excel Files (.xlsx)",
         type=["xlsx"],
-        accept_multiple_files=False,
-        key=uploader_key,
+        accept_multiple_files=True,
+        key="excel_upload",
     )
 
     if uploads:
-        clear_col, info_col = st.columns([1, 4])
-        with clear_col:
-            if st.button("🗑 REMOVE EXCEL", key="remove_excel_button", use_container_width=True):
-                st.session_state.excel_upload_signature = None
-                st.session_state.smart_generated = None
-                st.session_state.windows_queue = []
-                st.session_state.windows_decisions = {}
-                st.session_state.excel_uploader_version = st.session_state.get("excel_uploader_version", 0) + 1
-                st.rerun()
-        with info_col:
-            st.caption(f"Loaded Excel: {uploads.name}")
         try:
-            upload_signature = (uploads.name, getattr(uploads, "size", 0))
+            upload_signature = tuple((u.name, getattr(u, "size", 0)) for u in uploads)
             if st.session_state.get("excel_upload_signature") != upload_signature:
                 st.session_state.excel_upload_signature = upload_signature
                 st.session_state.windows_queue = []
                 st.session_state.windows_decisions = {}
 
-            parsed_files = [read_excel(uploads)]
+            parsed_files = [read_excel(uploaded) for uploaded in uploads]
             all_items = []
             for parsed_file in parsed_files:
                 for original in parsed_file["items"]:
@@ -1785,7 +1762,7 @@ if st.session_state.page == "M-SMART PDF":
 
             total_certificates = sum(max(1, int(item.get("qty", 1))) for item in all_items)
             st.success(
-                f"1 Excel file read successfully. "
+                f"{len(uploads)} Excel file(s) read successfully. "
                 f"Total item rows: {len(all_items)}. Certificates to generate: {total_certificates}."
             )
 
@@ -1982,8 +1959,17 @@ if st.session_state.page == "M-SMART PDF":
             )
 
             for index, page in enumerate(pdf_doc):
+                # Show only the certificate item name in the preview title.
+                # Example: CAMERA, LENS, CAMERA CABLE, etc.
+                if index < len(generated.get("entries", [])):
+                    preview_item = valid_value(
+                        generated["entries"][index]["item"].get("item")
+                    ) or f"Certificate {index + 1}"
+                else:
+                    preview_item = f"Certificate {index + 1}"
+
                 with st.expander(
-                    f"{item} Certificate Preview — Page {index + 1}",
+                    preview_item,
                     expanded=(index == 0),
                 ):
                     pix = page.get_pixmap(
@@ -2060,17 +2046,17 @@ elif st.session_state.page == "M-CERTIFICATE":
 
         with left:
             item_name = st.text_input(
-                settings.get("item_heading", "ITEM"),
+                "Item Name",
                 placeholder="CAMERA / LENS",
             )
 
-            make = st.text_input(settings.get("make_heading", "Make"))
-            model = st.text_input(settings.get("model_heading", "Model No."))
-            serial = st.text_input(settings.get("serial_heading", "Serial No."))
+            make = st.text_input("Make")
+            model = st.text_input("Model No")
+            serial = st.text_input("Serial No")
 
         with right:
             company = st.text_input(
-                settings.get("sold_to_heading", "Sold To"),
+                "Sold To / Company",
                 value="Customer",
             )
 
@@ -2079,9 +2065,9 @@ elif st.session_state.page == "M-CERTIFICATE":
                 value=date.today(),
             )
 
-            mac = st.text_input(settings.get("mac_heading", "MAC ID"))
-            operating_system = st.text_input(settings.get("operating_system_heading", "Operating System"))
-            win_key = st.text_input(settings.get("win_heading", "Window Key"))
+            mac = st.text_input("MAC ID")
+            operating_system = st.text_input("Operating System")
+            win_key = st.text_input("WIN KEY")
 
         st.caption(
             "Model No, Serial No, Make, MAC ID, and WIN KEY are optional."
@@ -2175,127 +2161,70 @@ elif st.session_state.page == "M-CERTIFICATE":
 elif st.session_state.page == "PAGE SETTINGS":
     st.header("PAGE SETTINGS")
 
-    settings = st.session_state.smart_settings
-
-    st.subheader("PRINT SETTINGS")
-    paper_type = st.selectbox(
-        "PRINT TYPE",
-        ["Letterhead", "Blank Paper"],
-        index=0 if settings.get("paper_type", "Letterhead") == "Letterhead" else 1,
-        key="setting_paper_type",
+    st.info(
+        "Certificate settings are fixed by the application. "
+        "Only the administrator background logo setting is available here."
     )
 
-    top_spacing = st.number_input(
-        "TOP TO BOTTOM HEIGHT (MM)",
-        min_value=0, max_value=100, step=1,
-        value=int(settings.get("top_spacing_mm", 10)),
-        key="setting_top_spacing",
-    )
-
-    date_format = st.selectbox(
-        "DATE FORMAT",
-        list(DATE_FORMATS.keys()),
-        index=list(DATE_FORMATS.keys()).index(settings.get("date_format", "DD-MMM-YY"))
-        if settings.get("date_format", "DD-MMM-YY") in DATE_FORMATS else 0,
-        key="setting_date_format",
-    )
-
-    st.divider()
-    st.subheader("MANUAL CERTIFICATE HEADINGS")
-
-    item_heading = st.text_input("ITEM HEADING", value=settings.get("item_heading", "ITEM"), key="setting_item_heading")
-    sold_to_heading = st.text_input("SOLD TO HEADING", value=settings.get("sold_to_heading", "Sold To"), key="setting_sold_to_heading")
-    make_heading = st.text_input("MAKE HEADING", value=settings.get("make_heading", "Make"), key="setting_make_heading")
-    model_heading = st.text_input("MODEL HEADING", value=settings.get("model_heading", "Model No."), key="setting_model_heading")
-    serial_heading = st.text_input("SERIAL HEADING", value=settings.get("serial_heading", "Serial No."), key="setting_serial_heading")
-    mac_heading = st.text_input("MAC HEADING", value=settings.get("mac_heading", "MAC ID"), key="setting_mac_heading")
-    win_heading = st.text_input("WINDOW KEY HEADING", value=settings.get("win_heading", "Window Key"), key="setting_win_heading")
-    operating_system_heading = st.text_input("OPERATING SYSTEM HEADING", value=settings.get("operating_system_heading", "Operating System"), key="setting_os_heading")
-
-    st.divider()
-    st.subheader("TABLE DISPLAY SETTINGS")
-    c1, c2 = st.columns(2)
-    with c1:
-        show_make = st.checkbox("MAKE", value=settings.get("show_make", True), key="setting_show_make")
-        show_model = st.checkbox("MODEL NO", value=settings.get("show_model", True), key="setting_show_model")
-        show_serial = st.checkbox("SERIAL NO", value=settings.get("show_serial", True), key="setting_show_serial")
-    with c2:
-        show_mac = st.checkbox("MAC ID", value=settings.get("show_mac", True), key="setting_show_mac")
-        show_win = st.checkbox("WINDOW KEY", value=settings.get("show_win", True), key="setting_show_win")
-        show_os = st.checkbox("OPERATING SYSTEM", value=settings.get("show_operating_system", True), key="setting_show_os")
-
-    st.divider()
-    st.subheader("INTRO SENTENCE SETTINGS")
-    st.caption("Example: This test certificate is for CAMERA having Model No. and Serial No., MAC ID as per below table.")
-
-    intro_model = st.checkbox("Use Model No. in sentence", value=settings.get("intro_model", True), key="setting_intro_model")
-    intro_serial = st.checkbox("Use Serial No. in sentence", value=settings.get("intro_serial", True), key="setting_intro_serial")
-    intro_mac = st.checkbox("Use MAC ID in sentence", value=settings.get("intro_mac", False), key="setting_intro_mac")
-    intro_make = st.checkbox("Use Make in sentence", value=settings.get("intro_make", False), key="setting_intro_make")
-    intro_os = st.checkbox("Use Operating System in sentence", value=settings.get("intro_operating_system", False), key="setting_intro_os")
-    intro_win = st.checkbox("Use Window Key in sentence", value=settings.get("intro_win", False), key="setting_intro_win")
-
-    settings.update({
-        "paper_type": paper_type,
-        "top_spacing_mm": top_spacing,
-        "date_format": date_format,
-        "item_heading": item_heading,
-        "sold_to_heading": sold_to_heading,
-        "make_heading": make_heading,
-        "model_heading": model_heading,
-        "serial_heading": serial_heading,
-        "mac_heading": mac_heading,
-        "win_heading": win_heading,
-        "operating_system_heading": operating_system_heading,
-        "show_make": show_make,
-        "show_model": show_model,
-        "show_serial": show_serial,
-        "show_mac": show_mac,
-        "show_win": show_win,
-        "show_operating_system": show_os,
-        "intro_model": intro_model,
-        "intro_serial": intro_serial,
-        "intro_mac": intro_mac,
-        "intro_make": intro_make,
-        "intro_operating_system": intro_os,
-        "intro_win": intro_win,
-    })
-    st.session_state.smart_settings = settings
-    st.success("Settings saved automatically.")
-
-    st.divider()
-
+    # --------------------------------------------------------
+    # ADMIN — BACKGROUND LOGO ONLY
+    # --------------------------------------------------------
     if st.session_state.get("is_admin", False):
         st.subheader("BACKGROUND LOGO — ADMIN ONLY")
-        st.caption("Upload or replace the private A4 letterhead/background image.")
+
+        st.caption(
+            "Upload or replace the private A4 letterhead/background image. "
+            "The image is stored in the Aiven PostgreSQL database."
+        )
+
         uploaded_bg = st.file_uploader(
             "Upload Letterhead Image (PNG/JPG)",
             type=["png", "jpg", "jpeg"],
             key="admin_bg_logo_upload",
         )
+
         if uploaded_bg is not None:
             try:
-                st.image(uploaded_bg, caption="Uploaded Background Preview", use_container_width=True)
+                st.image(
+                    uploaded_bg,
+                    caption="Uploaded Background Preview",
+                    use_container_width=True,
+                )
             except Exception:
                 pass
-            if st.button("SAVE BACKGROUND LOGO TO AIVEN", type="primary", use_container_width=True):
+
+            if st.button(
+                "SAVE BACKGROUND LOGO TO AIVEN",
+                type="primary",
+                use_container_width=True,
+            ):
                 try:
                     save_bg_logo(uploaded_bg)
-                    st.success("Background image saved successfully to the Aiven database.")
+                    st.success(
+                        "Background image saved successfully to the Aiven database."
+                    )
                 except Exception as exc:
                     st.error(f"Image save failed: {exc}")
 
-        if st.button("CHECK SAVED BACKGROUND LOGO", key="check_saved_bg_logo"):
+        if st.button(
+            "CHECK SAVED BACKGROUND LOGO",
+            key="check_saved_bg_logo",
+        ):
             try:
                 saved_logo = get_bg_logo()
+
                 if saved_logo:
-                    st.image(saved_logo[0], caption="Current Saved Database Background", use_container_width=True)
+                    st.image(
+                        saved_logo[0],
+                        caption="Current Saved Database Background",
+                        use_container_width=True,
+                    )
                 else:
                     st.warning("No background image has been uploaded yet.")
             except Exception as exc:
                 st.error(f"Database read failed: {exc}")
     else:
-        st.info("Administrator login is required only to manage the letterhead background.")
+        st.warning("Administrator login is required to manage the background logo.")
 
 
 # ============================================================
@@ -2311,3 +2240,4 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True,
         )
+
