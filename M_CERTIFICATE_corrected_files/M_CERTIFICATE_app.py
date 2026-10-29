@@ -50,7 +50,7 @@ DEFAULTS = {
     "mac_heading": "MAC ID",
     "win_heading": "WINDOW KEY",
     "operating_system_heading": "OPERATING SYSTEM",
-    "table_order": ["item", "model_no", "serial_no", "operating_system", "win_key", "make", "mac"],
+    "table_order": ["item", "model_no", "serial_no", "operating_system", "win_key", "mac", "make"],
     "intro_model": True,
     "intro_serial": True,
     "intro_mac": False,
@@ -723,20 +723,42 @@ def read_excel(uploaded_file):
                         operating_system = clean_operating_system(value)
                         break
 
-        # Special continuation row, e.g.
-        # WIN 11 IOT ENT 2024 LTSC | QWW8V-... | | 
-        # or Windows Key | Radhe Info | Win 11 IOT ENT LTSC | KNB2W-...
+        # Windows handling has TWO different cases:
+        #
+        # 1) A real item row named "Windows Key" is its OWN certificate.
+        #    Example:
+        #    Windows Key | Radhe Info | Win 11 IOT ENT LTSC | KNB2W-...
+        #
+        # 2) A continuation row whose item/name starts with WIN/WINDOWS and
+        #    contains a product key belongs to the PREVIOUS item (usually IPC).
         row_name_upper = name.upper()
-        is_windows_row = (
-            row_name_upper.startswith("WIN ")
-            or row_name_upper.startswith("WINDOWS ")
-            or "WINDOWS KEY" in row_name_upper
-            or (detected_key and any(is_operating_system_text(v) for v in row_values_valid))
+        is_standalone_windows_key_item = row_name_upper.strip() in {
+            "WINDOWS KEY", "WINDOW KEY", "WINDOWS PRODUCT KEY",
+            "WINDOWS LICENSE KEY", "WINDOWS LICENCE KEY",
+        }
+        is_windows_continuation = (
+            not is_standalone_windows_key_item
+            and (
+                row_name_upper.startswith("WIN ")
+                or row_name_upper.startswith("WINDOWS ")
+            )
+            and bool(detected_key or operating_system or model or serial)
         )
 
-        # A row whose name is Windows/Win is metadata for the previous item,
-        # not a new certificate.
-        if is_windows_row and previous_item:
+        # A standalone Windows Key row is a real certificate. Move the OS
+        # text from MN/model into OPERATING SYSTEM and keep the product key
+        # only in WINDOW KEY (not duplicated as SERIAL NO.).
+        if is_standalone_windows_key_item:
+            if not operating_system and is_operating_system_text(model):
+                operating_system = clean_operating_system(model)
+            if not operating_system and is_operating_system_text(serial):
+                operating_system = clean_operating_system(serial)
+            if not win_key:
+                win_key = detected_key
+            model = ""
+            serial = ""
+
+        if is_windows_continuation and previous_item:
             os_text = operating_system
             if not os_text:
                 if is_operating_system_text(name) and "WINDOWS KEY" not in row_name_upper:
@@ -751,7 +773,7 @@ def read_excel(uploaded_file):
             if win_key:
                 previous_item["win_key"] = win_key
             previous_item["_windows_detected"] = bool(win_key)
-            previous_item.setdefault("_windows_source_row", row)
+            previous_item["_windows_source_row"] = row
             continue
 
         # If the key is on the same normal item row, keep it with that item.
@@ -823,16 +845,26 @@ FIELD_DEFINITIONS = {
     "win_key": ("win_heading", "show_win"),
 }
 
-DEFAULT_TABLE_ORDER = ["item", "model_no", "serial_no", "operating_system", "win_key", "make", "mac"]
+DEFAULT_TABLE_ORDER = ["item", "model_no", "serial_no", "operating_system", "win_key", "mac", "make"]
 
 
 def table_fields(item, settings):
-    order = list(settings.get("table_order") or DEFAULT_TABLE_ORDER)
-    if "item" not in order:
-        order.insert(0, "item")
-    else:
-        order.remove("item")
-        order.insert(0, "item")
+    # ITEM is always first and MAKE is always last.
+    # Page Settings controls the order of every other enabled column.
+    configured = list(settings.get("table_order") or DEFAULT_TABLE_ORDER)
+    middle = [
+        key for key in configured
+        if key not in ("item", "make")
+        and key in FIELD_DEFINITIONS
+    ]
+
+    # Keep all known fields available even if an older saved setting does not
+    # contain one of them.
+    for key in DEFAULT_TABLE_ORDER:
+        if key not in ("item", "make") and key not in middle:
+            middle.append(key)
+
+    order = ["item"] + middle + ["make"]
 
     fields = []
     for key in order:
@@ -2043,9 +2075,8 @@ elif st.session_state.page == "PAGE SETTINGS":
             show_win = st.checkbox("Show WINDOW KEY", value=settings["show_win"])
 
         st.subheader("Table Heading Order")
-        st.caption("ITEM always remains first. Change the remaining positions as required.")
+        st.caption("ITEM is always first. MAKE is always last. Set the order of the other columns here.")
         order_options = [
-            ("make", "MAKE"),
             ("model_no", "MODEL NO"),
             ("serial_no", "SERIAL NO"),
             ("mac", "MAC ID"),
@@ -2054,17 +2085,19 @@ elif st.session_state.page == "PAGE SETTINGS":
         ]
         option_keys = [x[0] for x in order_options]
         option_labels = dict(order_options)
-        current_order = [x for x in settings.get("table_order", DEFAULT_TABLE_ORDER) if x != "item" and x in option_keys]
+        current_order = [
+            x for x in settings.get("table_order", DEFAULT_TABLE_ORDER)
+            if x not in ("item", "make") and x in option_keys
+        ]
         for key in option_keys:
             if key not in current_order:
                 current_order.append(key)
 
-        position_cols = st.columns(6)
+        position_cols = st.columns(5)
         selected_order = []
-        remaining = current_order[:]
         for pos, col in enumerate(position_cols):
             with col:
-                current = current_order[pos] if pos < len(current_order) else remaining[0]
+                current = current_order[pos]
                 choices = [k for k in option_keys if k not in selected_order]
                 idx = choices.index(current) if current in choices else 0
                 chosen = st.selectbox(
@@ -2111,7 +2144,7 @@ elif st.session_state.page == "PAGE SETTINGS":
             "show_mac": show_mac,
             "show_operating_system": show_os,
             "show_win": show_win,
-            "table_order": ["item"] + selected_order,
+            "table_order": ["item"] + selected_order + ["make"],
             "intro_model": intro_model,
             "intro_serial": intro_serial,
             "intro_mac": intro_mac,
