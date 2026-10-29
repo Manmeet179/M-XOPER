@@ -875,6 +875,28 @@ DEFAULT_TABLE_ORDER = ["item", "model_no", "serial_no", "operating_system", "win
 
 
 def table_fields(item, settings):
+    # CASE 1: the normal item (for example IPC) already contains its real
+    # MODEL NO + SERIAL NO + OPERATING SYSTEM + WINDOW KEY + MAKE.
+    # For this case the certificate must ALWAYS use all five data fields.
+    # Do not let old/global Page Settings hide MODEL or SERIAL.
+    if (
+        item.get("_windows_detected")
+        and not item.get("_windows_standalone")
+        and valid_value(item.get("model_no"))
+        and valid_value(item.get("serial_no"))
+        and valid_value(item.get("operating_system"))
+        and valid_value(item.get("win_key"))
+        and valid_value(item.get("make"))
+    ):
+        return [
+            ("ITEM", valid_value(item.get("item"))),
+            ("MODEL NO", valid_value(item.get("model_no"))),
+            ("SERIAL NO", valid_value(item.get("serial_no"))),
+            ("OPERATING SYSTEM", valid_value(item.get("operating_system"))),
+            ("WINDOW KEY", valid_value(item.get("win_key"))),
+            ("MAKE", valid_value(item.get("make"))),
+        ]
+
     # ITEM is always first and MAKE is always last.
     # Standalone Windows Key certificates are special: the popup controls
     # ONLY the two headings.  Their underlying data is always
