@@ -1972,9 +1972,18 @@ if st.session_state.page == "M-SMART PDF":
             )
 
             for index, page in enumerate(pdf_doc):
+                # Show only the certificate item name in the preview title.
+                # Example: CAMERA, LENS, CAMERA CABLE, etc.
+                if index < len(generated.get("entries", [])):
+                    preview_item = valid_value(
+                        generated["entries"][index]["item"].get("item")
+                    ) or f"Certificate {index + 1}"
+                else:
+                    preview_item = f"Certificate {index + 1}"
+
                 with st.expander(
-                    f"Certificate Preview — Page {index + 1}",
-                    expanded=(index == 0),
+                        preview_item,
+                        expanded=(index == 0),
                 ):
                     pix = page.get_pixmap(
                         matrix=fitz.Matrix(1.1, 1.1),
