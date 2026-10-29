@@ -2070,7 +2070,7 @@ elif st.session_state.page == "M-CERTIFICATE":
         with right:
             company = st.text_input(
                 "Sold To / Company",
-                value="",
+                placeholder="Company Name",
             )
 
             cert_date = st.date_input(
