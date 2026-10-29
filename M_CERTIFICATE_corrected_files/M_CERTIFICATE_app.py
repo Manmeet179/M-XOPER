@@ -1683,7 +1683,17 @@ if st.session_state.page == "M-SMART PDF":
 
             if st.button("✨ GENERATE CERTIFICATES", type="primary", use_container_width=True, disabled=bool(st.session_state.get("windows_queue"))):
                 updated_items = []
-                for idx, row in enumerate(edited_df.to_dict("records")):
+
+                # st.data_editor() returns a list of dictionaries when the
+                # input is a list. Older/newer Streamlit versions may return
+                # a pandas DataFrame in other cases, so support both.
+                if hasattr(edited_df, "to_dict"):
+                    edited_rows = edited_df.to_dict("records")
+                else:
+                    edited_rows = edited_df
+
+                for idx, row in enumerate(edited_rows):
+                    row = dict(row)
                     original = dict(all_items[idx])
                     original["item"] = valid_value(row.get("Item"))
                     original["make"] = valid_value(row.get("Make"))
